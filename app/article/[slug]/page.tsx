@@ -14,9 +14,9 @@ function renderParagraphs(text: string) {
 export default async function ArticlePage({
   params,
 }: {
-  params: { slug: string };
+  params: Promise<{ slug: string }>;
 }) {
-  const { slug } = params;
+  const { slug } = await params;
   const article = await getArticleBySlug(slug);
 
   if (!article) notFound();
