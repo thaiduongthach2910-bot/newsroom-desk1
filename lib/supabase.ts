@@ -155,27 +155,26 @@ export async function storeArticle(article: ArticleRecord) {
 
   const { data: upsertedArticle, error: articleError } = await supabase
     .from("articles")
-    .upsert(
-      {
-        id: article.id,
-        source_id: sourceId,
-        url: article.url,
-        title: article.title,
-        published_at: article.publishedAt,
-        raw_text: article.content,
-        clean_text: article.content,
-        author_name: null,
-        article_type: article.articleType,
-        is_promotional: article.isPromotional,
-        keep_article: article.keepArticle,
-        importance_score: article.importanceScore,
-        importance_level: article.importanceLevel,
-        status: "summarized",
-      },
-      { onConflict: "url" }
-    )
-    .select("id")
-    .single();
+.upsert(
+  {
+    source_id: sourceId,
+    url: article.url,
+    title: article.title,
+    published_at: article.publishedAt,
+    raw_text: article.content,
+    clean_text: article.content,
+    author_name: null,
+    article_type: article.articleType,
+    is_promotional: article.isPromotional,
+    keep_article: article.keepArticle,
+    importance_score: article.importanceScore,
+    importance_level: article.importanceLevel,
+    status: "summarized",
+  },
+  { onConflict: "url" }
+)
+.select("id")
+.single();
 
   if (articleError) throw articleError;
 
