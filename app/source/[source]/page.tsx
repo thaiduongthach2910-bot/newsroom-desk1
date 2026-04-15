@@ -20,9 +20,9 @@ const sourceMeta: Record<SourceKey, { title: string; description: string }> = {
 export default async function SourcePage({
   params,
 }: {
-  params: { source: string };
+  params: Promise<{ source: string }>;
 }) {
-  const { source } = params;
+  const { source } = await params;
 
   if (source !== "vneconomy" && source !== "nghiencuuquocte") {
     notFound();
