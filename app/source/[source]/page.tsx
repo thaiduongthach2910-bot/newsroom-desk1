@@ -17,12 +17,12 @@ const sourceMeta: Record<SourceKey, { title: string; description: string }> = {
   },
 };
 
-export default async function SourcePage({
+export default async function ArticlePage({
   params,
 }: {
-  params: Promise<{ source: string }>;
+  params: Promise<{ slug: string }>;
 }) {
-  const { source } = await params;
+  const { slug } = await params;
 
   if (source !== "vneconomy" && source !== "nghiencuuquocte") {
     notFound();
