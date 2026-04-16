@@ -7,25 +7,23 @@ function sleep(ms: number) {
 
 function isRateLimitError(error: unknown) {
   if (!error || typeof error !== "object") return false;
+
   const e = error as { status?: number; code?: string };
   return e.status === 429 || e.code === "rate_limit_exceeded";
 }
 
-function errorLabel(error: unknown) {
-  if (!error || typeof error !== "object") return "unknown";
-  const e = error as { status?: number; code?: string; message?: string };
-  return `${e.status || ""} ${e.code || ""} ${e.message || ""}`.trim() || "unknown";
-}
-
-async function withRetry<T>(fn: () => Promise<T>, maxRetries = 2): Promise<T> {
+async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
   let attempt = 0;
 
   while (true) {
     try {
       return await fn();
     } catch (error) {
-      if (!isRateLimitError(error) || attempt >= maxRetries) throw error;
-      const delay = 1200 * Math.pow(2, attempt);
+      if (!isRateLimitError(error) || attempt >= maxRetries) {
+        throw error;
+      }
+
+      const delay = 1500 * Math.pow(2, attempt);
       await sleep(delay);
       attempt += 1;
     }
@@ -73,60 +71,86 @@ const SUMMARY_SCHEMA = {
   ],
 } as const;
 
-function firstMeaningfulParagraph(content: string) {
-  return (
-    content
-      .split(/\n\n+/)
-      .map((item) => item.replace(/\s+/g, " ").trim())
-      .find((item) => item.length > 80) || content.slice(0, 260)
-  );
+function collapseWhitespace(text: string) {
+  return text.replace(/\s+/g, " ").trim();
 }
 
-function clip(text: string, max = 260) {
-  const cleaned = text.replace(/\s+/g, " ").trim();
-  if (cleaned.length <= max) return cleaned;
-  return `${cleaned.slice(0, max - 1).trim()}…`;
-}
+function pickSentences(text: string, maxSentences = 2, maxChars = 320) {
+  const cleaned = collapseWhitespace(text);
+  if (!cleaned) return "";
 
-function summaryFallback(title: string, excerpt: string, content: string, sourceLabel: string, articleType: string): SummaryBlock {
-  const base = clip(excerpt || firstMeaningfulParagraph(content), 280);
-  const opinionLike = articleType === "opinion_translation" || sourceLabel.toLowerCase().includes("nghiên cứu");
+  const sentences = cleaned
+    .split(/(?<=[.!?…])\s+|(?<=[。！？])\s*/)
+    .map((part) => part.trim())
+    .filter(Boolean);
 
-  if (opinionLike) {
-    return {
-      summaryShort: base,
-      whatItReallySays:
-        "Đây là bài thiên về bình luận hoặc diễn giải. Điều cần đọc không chỉ là sự kiện được nêu, mà là kết luận trung tâm mà tác giả đang cố dẫn người đọc tới.",
-      whyItMatters:
-        "Loại bài này hữu ích khi nó giúp nhìn rõ một cách diễn giải đang ảnh hưởng tới nhận thức về khu vực, chính sách hoặc rủi ro chiến lược. Giá trị nằm ở việc hiểu lập luận, không phải coi toàn bộ bài là fact thuần.",
-      easyExplanation:
-        "Nói đơn giản, bài đang muốn bạn nhìn vấn đề theo một khung lập luận cụ thể. Hãy giữ phần dữ kiện, nhưng cũng để ý chỗ tác giả đang suy diễn hoặc đẩy mạnh kết luận.",
-      keyTakeaway: `Điểm nên giữ lại từ bài "${title}" là tách bạch giữa dữ kiện bài nêu ra và kết luận mà tác giả đang muốn người đọc chấp nhận.`,
-      cautionNote:
-        "Với bài bình luận/biên dịch, luôn kiểm tra xem kết luận có thật sự được chứng minh đủ trong chính bài hay không. Phần tóm tắt này là bản dự phòng, nên chưa bóc hết mọi giả định của tác giả.",
-      conclusionText:
-        "Bài đáng đọc để hiểu một lối diễn giải, nhưng không nên đọc như bản tin trung lập tuyệt đối.",
-      tableData: [],
-      diagramHint: "none",
-    };
+  const selected: string[] = [];
+  for (const sentence of sentences) {
+    if (selected.join(" ").length + sentence.length > maxChars && selected.length > 0) break;
+    selected.push(sentence);
+    if (selected.length >= maxSentences) break;
   }
 
+  return selected.join(" ") || cleaned.slice(0, maxChars);
+}
+
+function firstUsefulParagraph(content: string) {
+  const parts = content
+    .split(/\n\n+/)
+    .map((part) => collapseWhitespace(part))
+    .filter((part) => part.length >= 80);
+
+  return parts[0] || collapseWhitespace(content).slice(0, 400);
+}
+
+function detectTheme(title: string, excerpt: string, content: string) {
+  const text = `${title} ${excerpt} ${content}`.toLowerCase();
+
+  if (/(myanmar|asean|trump|mỹ|trung quốc|iran|israel|ukraine|nga)/.test(text)) {
+    return "địa chính trị và tác động chính sách";
+  }
+  if (/(thuế|lãi suất|fed|tỷ giá|ngân hàng|tài chính)/.test(text)) {
+    return "tiền tệ, tài chính và chi phí vốn";
+  }
+  if (/(xuất khẩu|nhập khẩu|logistics|chuỗi cung ứng|vận tải)/.test(text)) {
+    return "chuỗi cung ứng, thương mại và logistics";
+  }
+  if (/(ai|công nghệ|nền tảng|phần mềm|chip)/.test(text)) {
+    return "công nghệ và tác động thương mại";
+  }
+
+  return "tác động thực tế phía sau sự kiện";
+}
+
+const summaryFallback = (title: string, excerpt: string, content: string, sourceLabel: string, articleType?: string): SummaryBlock => {
+  const lead = pickSentences(excerpt || firstUsefulParagraph(content), 2, 340);
+  const explainBase = pickSentences(firstUsefulParagraph(content), 2, 300);
+  const isOpinion = articleType === "opinion_translation" || sourceLabel.toLowerCase().includes("nghiên cứu") || sourceLabel.toLowerCase().includes("nghien");
+  const theme = detectTheme(title, excerpt, content);
+
   return {
-    summaryShort: base,
-    whatItReallySays:
-      "Bài này có giá trị khi đọc ở lớp tác động thực: nó đang gợi ý điều gì sẽ thay đổi với doanh nghiệp, thị trường, chi phí, hợp đồng hoặc quyết định vận hành, chứ không chỉ dừng ở việc kể lại diễn biến.",
-    whyItMatters:
-      "Nếu đọc đúng, bài cho thấy rủi ro hoặc cơ hội nằm ở hệ quả phía sau headline. Phần quan trọng không phải tin tức bề mặt, mà là việc điều đó làm đổi kỳ vọng, dòng tiền hoặc cách ra quyết định như thế nào.",
-    easyExplanation:
-      "Hiểu ngắn gọn, đây không chỉ là một mẩu tin để biết cho có. Nó đáng đọc vì có thể ảnh hưởng tới cách doanh nghiệp hoặc nhà đầu tư nhìn thị trường và chuẩn bị bước tiếp theo.",
-    keyTakeaway: `Điểm cần giữ lại từ bài "${title}" là phải đọc lớp tác động thực phía sau sự kiện, thay vì dừng ở bề mặt thông tin.`,
-    cautionNote:
-      "Đây là bản dự phòng khi lớp phân tích AI chưa trả đủ structured output. Hướng đọc vẫn đúng, nhưng mức chi tiết chưa phải bản cuối cùng.",
-    conclusionText:
-      "Bài có ích nhất khi được dùng để hiểu tác động thực tế, không phải chỉ để cập nhật headline.",
+    summaryShort: lead || `Bài "${title}" xoay quanh ${theme}, nhưng hệ thống hiện mới tạo được bản tóm tắt dự phòng thay vì bản phân tích đầy đủ bằng AI.`,
+    whatItReallySays: isOpinion
+      ? `Đây là bài bình luận/biên dịch. Luận điểm trung tâm mà tác giả muốn đẩy người đọc tới là cách nhìn về ${theme}, chứ không chỉ thuật lại sự kiện.`
+      : `Bài này không dừng ở việc báo tin. Điều đáng giữ lại là hệ quả thực tế của câu chuyện đối với ${theme}.`,
+    whyItMatters: `Điểm đáng chú ý không nằm ở headline mà ở chỗ bài buộc người đọc dịch câu chuyện sang ngôn ngữ tác động thực: ai bị ảnh hưởng, chi phí nào đổi, và quyết định nào có thể phải điều chỉnh.`,
+    easyExplanation: explainBase || `Nói ngắn gọn, bạn nên hiểu bài này như một nỗ lực giải thích ${theme} bằng ví dụ cụ thể, chứ không phải một mẩu tin rời rạc.`,
+    keyTakeaway: `Điểm nên giữ lại từ bài "${title}" là phải đọc lớp tác động thực tế phía sau câu chuyện về ${theme}.`,
+    cautionNote: isOpinion
+      ? "Với bài bình luận/biên dịch, cần tách phần fact được bài nêu ra khỏi phần suy luận của tác giả. Bản tóm tắt này vẫn là dự phòng nên chưa bóc tách đủ sâu."
+      : "Đây vẫn là bản tóm tắt dự phòng. Nó đủ để nắm ý chính, nhưng chưa phải lớp phân tích sâu cuối cùng để dùng như kết luận chắc chắn.",
+    conclusionText: `Hệ thống đã lấy được bài thật. Tuy nhiên phần tóm tắt này vẫn là fallback nên nên được coi là bản đọc nhanh, không phải bản phân tích hoàn chỉnh.`,
     tableData: [],
     diagramHint: "none",
   };
+};
+
+function extractJson(text: string) {
+  const cleaned = text.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/```$/i, "").trim();
+  const start = cleaned.indexOf("{");
+  const end = cleaned.lastIndexOf("}");
+  if (start === -1 || end === -1 || end <= start) return null;
+  return cleaned.slice(start, end + 1);
 }
 
 function normalizeSummary(parsed: any): SummaryBlock | null {
@@ -146,10 +170,6 @@ function normalizeSummary(parsed: any): SummaryBlock | null {
     if (typeof parsed[key] !== "string" || !parsed[key].trim()) return null;
   }
 
-  const diagramHint = ["timeline", "cause-effect", "compare", "none"].includes(parsed.diagramHint)
-    ? parsed.diagramHint
-    : "none";
-
   return {
     summaryShort: parsed.summaryShort.trim(),
     whatItReallySays: parsed.whatItReallySays.trim(),
@@ -159,55 +179,13 @@ function normalizeSummary(parsed: any): SummaryBlock | null {
     cautionNote: parsed.cautionNote.trim(),
     conclusionText: parsed.conclusionText.trim(),
     tableData: Array.isArray(parsed.tableData) ? parsed.tableData : [],
-    diagramHint,
+    diagramHint:
+      parsed.diagramHint === "timeline" ||
+      parsed.diagramHint === "cause-effect" ||
+      parsed.diagramHint === "compare"
+        ? parsed.diagramHint
+        : "none",
   };
-}
-
-function extractJsonPayload(raw: string) {
-  const cleaned = raw.trim();
-  if (!cleaned) return null;
-
-  try {
-    return JSON.parse(cleaned);
-  } catch {
-    const firstBrace = cleaned.indexOf("{");
-    const lastBrace = cleaned.lastIndexOf("}");
-    if (firstBrace === -1 || lastBrace === -1 || lastBrace <= firstBrace) return null;
-
-    try {
-      return JSON.parse(cleaned.slice(firstBrace, lastBrace + 1));
-    } catch {
-      return null;
-    }
-  }
-}
-
-function readOutputText(response: any) {
-  if (typeof response?.output_text === "string" && response.output_text.trim()) return response.output_text.trim();
-  if (response?.output_parsed) return JSON.stringify(response.output_parsed);
-
-  const output = response?.output;
-  if (!Array.isArray(output)) return "";
-
-  const chunks: string[] = [];
-  for (const item of output) {
-    const content = Array.isArray(item?.content) ? item.content : [];
-    for (const block of content) {
-      if (typeof block?.text === "string") chunks.push(block.text);
-    }
-  }
-
-  return chunks.join("\n").trim();
-}
-
-function compactContent(content: string) {
-  return content
-    .split(/\n\n+/)
-    .map((item) => item.replace(/\s+/g, " ").trim())
-    .filter(Boolean)
-    .slice(0, 10)
-    .join("\n\n")
-    .slice(0, 9000);
 }
 
 function buildSummaryPrompt(params: {
@@ -221,34 +199,37 @@ function buildSummaryPrompt(params: {
   const isOpinion = articleType === "opinion_translation";
 
   return `
-Bạn là biên tập viên phân tích tin tức bằng tiếng Việt.
-Hãy viết để người đọc hiểu bản chất, không viết chung chung, không dùng văn placeholder.
-Không bịa dữ kiện ngoài bài.
-Nếu bài không đủ dữ liệu để kết luận mạnh, phải nói rõ giới hạn đó.
+Bạn là biên tập viên phân tích tin tức bằng tiếng Việt, viết cho một người đọc muốn hiểu bản chất chứ không chỉ đọc headline.
 
-Yêu cầu theo từng field:
-- summaryShort: 3-4 câu, nêu sự kiện chính và tác động chính.
-- whatItReallySays: chỉ ra bài thực chất đang dẫn người đọc tới kết luận nào.
-- whyItMatters: bám vào tác động doanh nghiệp / chính sách / thị trường / logistics / địa chính trị khi có.
-- easyExplanation: giải thích rõ bằng tiếng Việt tự nhiên, không được mở đầu bằng "Nói dễ hiểu".
-- keyTakeaway: 1 ý chốt đáng nhớ nhất.
-- cautionNote: nêu điểm phải dè chừng khi đọc bài.
-- conclusionText: kết ngắn nhưng có trọng lượng.
-- tableData: chỉ điền khi bài có 2-5 số liệu hoặc mốc thời gian đáng nhặt ra.
+Mục tiêu: tạo output đủ chiều sâu để hiển thị trên dashboard đọc tin cá nhân. Phải viết thật, có nội dung, không dùng câu vô thưởng vô phạt.
+
+Quy tắc chung:
+- Viết rõ, trực diện, không sáo rỗng.
+- Không chép lại tiêu đề theo kiểu báo chí.
+- Không bịa dữ kiện ngoài bài.
+- Nếu bài không đủ dữ liệu để kết luận mạnh, phải nói rõ giới hạn đó.
+- Từng trường phải có giá trị thực, không được viết kiểu placeholder.
+- summaryShort: 2-4 câu, bám sát dữ kiện thật có trong bài, không mở đầu bằng "Nguồn:".
+- whatItReallySays: bóc rõ bài thực chất đang muốn người đọc hiểu điều gì.
+- whyItMatters: giải thích vì sao việc này đáng quan tâm với góc nhìn doanh nghiệp / chính sách / thị trường / logistics / dòng tiền nếu có.
+- easyExplanation: giải thích như đang nói với người đọc thông minh nhưng không muốn đọc jargon.
+- keyTakeaway: chốt điều quan trọng nhất cần giữ lại.
+- cautionNote: nêu điểm cần dè chừng hoặc giới hạn khi đọc.
+- conclusionText: đoạn kết ngắn nhưng có trọng lượng.
+- Nếu trong bài có số liệu, mốc thời gian, tỷ lệ, quy mô, hãy cố gắng đưa 2-5 dòng vào tableData.
 
 Nguồn: ${sourceLabel}
 Loại bài: ${articleType}
 
-Quy tắc riêng:
+Cách đọc riêng cho bài này:
 ${isOpinion
-  ? "- Đây là bài bình luận/biên dịch. Hãy tách rõ phần fact và phần lập luận của tác giả.\n- whatItReallySays phải nêu được luận điểm trung tâm của tác giả.\n- cautionNote phải chỉ ra giới hạn hoặc thiên hướng lập luận nếu có."
-  : "- Đây là bài tin/phân tích thực tế. Hãy bám vào tác động thật, tránh bình luận vĩ mô chung chung.\n- whatItReallySays phải chỉ ra bài đang cảnh báo hoặc nhấn mạnh điều gì về tác động thực."
-}
+  ? "- Đây là bài bình luận/biên dịch, không phải bản tin trung lập.\n- whatItReallySays phải nêu được luận điểm trung tâm của tác giả.\n- cautionNote phải nói rõ chỗ nào là giả định hoặc thiên hướng lập luận.\n- easyExplanation nên diễn đạt kiểu: nói dễ hiểu thì tác giả đang bảo rằng..."
+  : "- Đây là bài tin/phân tích thực tế.\n- whatItReallySays phải nêu rõ bài đang cảnh báo, nhấn mạnh hoặc định hướng người đọc theo kết luận nào.\n- whyItMatters nên bám vào tác động thực.\n- easyExplanation phải thực dụng, tránh vĩ mô chung chung."}
 
 Tiêu đề: ${title}
 Excerpt: ${excerpt}
 Nội dung bài:
-${compactContent(content)}
+${content.slice(0, 15000)}
 `;
 }
 
@@ -261,7 +242,10 @@ export async function generateSummary(params: {
 }): Promise<SummaryBlock> {
   const { title, excerpt, content, sourceLabel, articleType } = params;
   const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) return summaryFallback(title, excerpt, content, sourceLabel, articleType);
+
+  if (!apiKey) {
+    return summaryFallback(title, excerpt, content, sourceLabel, articleType);
+  }
 
   const client = new OpenAI({ apiKey });
   const prompt = buildSummaryPrompt(params);
@@ -273,7 +257,7 @@ export async function generateSummary(params: {
         input: [
           {
             role: "system",
-            content: "Bạn là biên tập viên phân tích tin tức bằng tiếng Việt. Trả về JSON đúng schema.",
+            content: "Bạn là biên tập viên phân tích tin tức bằng tiếng Việt. Trả về dữ liệu có cấu trúc đúng schema.",
           },
           {
             role: "user",
@@ -293,14 +277,10 @@ export async function generateSummary(params: {
       })
     );
 
-    const rawText = readOutputText(response as any);
-    const parsed = normalizeSummary(extractJsonPayload(rawText));
-    if (parsed) return parsed;
-
-    console.warn("generateSummary fallback", { title, sourceLabel, reason: "invalid_json_output" });
-    return summaryFallback(title, excerpt, content, sourceLabel, articleType);
-  } catch (error) {
-    console.warn("generateSummary fallback", { title, sourceLabel, reason: errorLabel(error) });
+    const raw = extractJson(response.output_text || "");
+    const parsed = raw ? normalizeSummary(JSON.parse(raw)) : null;
+    return parsed ?? summaryFallback(title, excerpt, content, sourceLabel, articleType);
+  } catch {
     return summaryFallback(title, excerpt, content, sourceLabel, articleType);
   }
 }
@@ -322,9 +302,11 @@ export async function answerAboutArticle(params: {
 
   const prompt = `
 Bạn là trợ lý giải thích tin tức bằng tiếng Việt.
-Chỉ trả lời dựa trên bài đang mở và phần summary có sẵn. Không bịa dữ kiện ngoài bài.
+Nhiệm vụ: chỉ trả lời dựa trên bài đang mở và phần tóm tắt đã có sẵn. Không bịa nguồn khác. Không đi lan man.
 
 Tiêu đề: ${title}
+
+Tóm tắt có sẵn:
 - Tóm tắt ngắn: ${summary.summaryShort}
 - Bài thực chất muốn nói gì: ${summary.whatItReallySays}
 - Vì sao quan trọng: ${summary.whyItMatters}
@@ -333,10 +315,16 @@ Tiêu đề: ${title}
 - Điểm cần dè chừng: ${summary.cautionNote}
 
 Nội dung nền:
-${compactContent(content).slice(0, 7000)}
+${content.slice(0, 12000)}
 
-Câu hỏi:
+Câu hỏi của người dùng:
 ${question}
+
+Hãy trả lời:
+- Rõ ràng
+- Dễ hiểu
+- Có good will
+- Nếu câu hỏi vượt ngoài dữ liệu của bài, nói rõ là bài hiện tại không đủ để khẳng định.
 `;
 
   try {
@@ -349,7 +337,7 @@ ${question}
       })
     );
 
-    return readOutputText(response as any).trim() || `Dựa trên bài đang mở, ý chính cần giữ lại là: ${summary.keyTakeaway}`;
+    return response.output_text.trim();
   } catch {
     return `Tôi chưa trả lời được bằng AI lúc này. Dựa trên bài đang mở, ý chính cần giữ lại là: ${summary.keyTakeaway}`;
   }

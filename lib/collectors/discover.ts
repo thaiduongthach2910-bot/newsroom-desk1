@@ -1,9 +1,14 @@
 import * as cheerio from "cheerio";
-import { XMLParser } from "fast-xml-parser";
 import { SourceKey } from "@/lib/types";
 
 const SOURCE_URLS: Record<SourceKey, string[]> = {
-  vneconomy: ["https://vneconomy.vn/rss.html", "https://vneconomy.vn/"],
+  vneconomy: [
+    "https://vneconomy.vn/",
+    "https://vneconomy.vn/thi-truong.htm",
+    "https://vneconomy.vn/tai-chinh-ngan-hang.htm",
+    "https://vneconomy.vn/kinh-te-the-gioi.htm",
+    "https://vneconomy.vn/doanh-nghiep.htm",
+  ],
   nghiencuuquocte: ["https://nghiencuuquocte.org/"],
 };
 
@@ -31,8 +36,7 @@ const BLOCKED_VNECONOMY_PREFIXES = [
   "thi-truong",
   "phap-ly",
   "khung-phap-ly",
-  "rss",
-  "rss.html",
+  "san-pham-thi-truong",
 ];
 
 const BLOCKED_ANCHOR_TEXT = [
@@ -51,41 +55,7 @@ const BLOCKED_ANCHOR_TEXT = [
   "e-magazine",
   "kinh tế xanh",
   "thương vụ anh",
-  "đọc tiếp",
-  "xem thêm",
-  "chi tiết",
-  "tại đây",
-];
-
-const RELEVANT_NGHIENCUU_KEYWORDS = [
-  "asean",
-  "trung quốc",
-  "mỹ",
-  "nga",
-  "ukraine",
-  "eu",
-  "nato",
-  "iran",
-  "israel",
-  "myanmar",
-  "trump",
-  "chiến tranh",
-  "hòa bình",
-  "địa chính trị",
-  "thương mại",
-  "kinh tế",
-  "an ninh",
-  "biển đông",
-  "năng lượng",
-  "thuế",
-  "chuỗi cung ứng",
-  "logistics",
-  "fed",
-  "lạm phát",
-  "tiền tệ",
-  "ngân hàng",
-  "khu vực",
-  "đông nam á",
+  "sản phẩm - thị trường",
 ];
 
 function normalizeUrl(href: string, base: string) {
@@ -109,10 +79,6 @@ function slugFromUrl(url: string) {
   }
 }
 
-function cleanText(text: string) {
-  return text.replace(/\s+/g, " ").trim().toLowerCase();
-}
-
 function isFreshDateFromUrl(url: string, maxDays = 4) {
   const match = url.match(/\/(\d{4})\/(\d{2})\/(\d{2})\//);
   if (!match) return false;
@@ -125,39 +91,39 @@ function isFreshDateFromUrl(url: string, maxDays = 4) {
   return diffDays >= 0 && diffDays <= maxDays;
 }
 
-function isBlockedAnchorText(text: string) {
-  const cleaned = cleanText(text);
-  if (!cleaned) return false;
-  if (BLOCKED_ANCHOR_TEXT.some((item) => cleaned === item || cleaned.startsWith(item + " "))) return true;
-  if (cleaned.length < 12) return true;
-  return false;
+function normalizeAnchorText(text: string) {
+  return text.replace(/\s+/g, " ").trim().toLowerCase();
 }
 
-function isLikelyVnEconomyArticle(url: string, anchorText = "") {
+function isBlockedAnchorText(text: string) {
+  const cleaned = normalizeAnchorText(text);
+  if (!cleaned) return true;
+  if (BLOCKED_ANCHOR_TEXT.some((item) => cleaned === item || cleaned.startsWith(item + " "))) return true;
+  return cleaned.length < 12;
+}
+
+function isLikelyVnEconomyArticle(url: string, anchorText: string) {
   if (!url.startsWith("https://vneconomy.vn/")) return false;
   if (!url.endsWith(".htm")) return false;
 
   const slug = slugFromUrl(url);
   const hyphenCount = (slug.match(/-/g) || []).length;
+  const cleanedAnchor = normalizeAnchorText(anchorText);
 
-  if (!slug || slug.length < 16 || hyphenCount < 3) return false;
+  if (!slug || hyphenCount < 4) return false;
   if (BLOCKED_VNECONOMY_PREFIXES.some((prefix) => slug === prefix || slug.startsWith(prefix + "-"))) return false;
-  if (anchorText && isBlockedAnchorText(anchorText)) return false;
+  if (isBlockedAnchorText(anchorText)) return false;
+  if (/^[\p{L}\d\s]+\s-\s[\p{L}\d\s]+$/u.test(anchorText) && cleanedAnchor.split(/\s+/).length <= 6) return false;
 
   return true;
 }
 
-function isLikelyNghienCuuQuocTeArticle(url: string, anchorText = "") {
+function isLikelyNghienCuuQuocTeArticle(url: string, anchorText: string) {
   if (!url.startsWith("https://nghiencuuquocte.org/")) return false;
-  if (!/\/(\d{4})\/(\d{2})\/(\d{2})\//.test(url)) return false;
-  if (!isFreshDateFromUrl(url, 4)) return false;
-
-  const cleaned = cleanText(anchorText);
-  if (cleaned.includes("thế giới hôm nay")) return false;
-  if (/^\d{1,2}\/\d{1,2}\/\d{4}\s*:/.test(cleaned)) return false;
-  if (cleaned && !RELEVANT_NGHIENCUU_KEYWORDS.some((kw) => cleaned.includes(kw))) return false;
-
-  return true;
+  if (!/\/\d{4}\/\d{2}\/\d{2}\//.test(url)) return false;
+  if (/the-gioi-hom-nay/i.test(url)) return false;
+  if (/^\d{1,2}\/\d{1,2}\/\d{4}\s*:/i.test(anchorText.trim())) return false;
+  return isFreshDateFromUrl(url, 4);
 }
 
 function isLikelyArticleUrl(source: SourceKey, url: string, anchorText = "") {
@@ -168,7 +134,7 @@ function isLikelyArticleUrl(source: SourceKey, url: string, anchorText = "") {
 
 async function fetchText(url: string) {
   const res = await fetch(url, {
-    headers: { "user-agent": "newsroom-desk-final/1.0" },
+    headers: { "user-agent": "news-dashboard-final/1.0" },
     next: { revalidate: 1800 },
   });
 
@@ -176,30 +142,10 @@ async function fetchText(url: string) {
   return res.text();
 }
 
-function parseRssItems(xml: string, source: SourceKey) {
-  const parser = new XMLParser({ ignoreAttributes: false });
-  const parsed = parser.parse(xml);
-  const channels = parsed?.rss?.channel;
-  const channelArray = Array.isArray(channels) ? channels : [channels].filter(Boolean);
-  const collected = new Set<string>();
-
-  for (const channel of channelArray) {
-    const items = Array.isArray(channel?.item) ? channel.item : [channel?.item].filter(Boolean);
-    for (const item of items) {
-      const link = typeof item?.link === "string" ? item.link.trim() : "";
-      const title = typeof item?.title === "string" ? item.title.trim() : "";
-      if (link && isLikelyArticleUrl(source, link, title)) collected.add(link);
-    }
-  }
-
-  return Array.from(collected);
-}
-
 async function parseHtmlLinks(url: string, source: SourceKey) {
   const html = await fetchText(url);
   const $ = cheerio.load(html);
   const collected = new Set<string>();
-  const feedUrls = new Set<string>();
 
   $("a[href]").each((_, element) => {
     const href = $(element).attr("href");
@@ -209,69 +155,10 @@ async function parseHtmlLinks(url: string, source: SourceKey) {
     if (!normalized) return;
 
     const anchorText = $(element).text().replace(/\s+/g, " ").trim();
-    if (isLikelyArticleUrl(source, normalized, anchorText)) {
-      collected.add(normalized);
-      return;
-    }
+    if (!isLikelyArticleUrl(source, normalized, anchorText)) return;
 
-    if (
-      source === "vneconomy" &&
-      normalized.startsWith("https://vneconomy.vn/") &&
-      (/\.rss$/i.test(normalized) || /\/rss/i.test(new URL(normalized).pathname))
-    ) {
-      feedUrls.add(normalized);
-    }
+    collected.add(normalized);
   });
-
-  if (source === "vneconomy" && feedUrls.size > 0) {
-    for (const feedUrl of Array.from(feedUrls).slice(0, 10)) {
-      try {
-        const feedXml = await fetchText(feedUrl);
-        for (const link of parseRssItems(feedXml, "vneconomy")) collected.add(link);
-      } catch {
-        // ignore one feed failure
-      }
-    }
-  }
-
-  return Array.from(collected);
-}
-
-async function parseVnEconomyEndpoint(url: string) {
-  const text = await fetchText(url);
-  if (/^\s*<\?xml/i.test(text) || /<rss[\s>]/i.test(text)) {
-    return parseRssItems(text, "vneconomy");
-  }
-
-  const $ = cheerio.load(text);
-  const collected = new Set<string>();
-  const feedUrls = new Set<string>();
-
-  $("a[href]").each((_, element) => {
-    const href = $(element).attr("href");
-    if (!href) return;
-    const normalized = normalizeUrl(href, url);
-    if (!normalized) return;
-    const anchorText = $(element).text().replace(/\s+/g, " ").trim();
-
-    if (isLikelyVnEconomyArticle(normalized, anchorText)) {
-      collected.add(normalized);
-      return;
-    }
-
-    if (/\.rss$/i.test(normalized) || /\/rss/i.test(new URL(normalized).pathname)) {
-      feedUrls.add(normalized);
-    }
-  });
-
-  for (const feedUrl of Array.from(feedUrls).slice(0, 10)) {
-    try {
-      const feedXml = await fetchText(feedUrl);
-      for (const link of parseRssItems(feedXml, "vneconomy")) collected.add(link);
-    } catch {
-      // ignore one feed failure
-    }
-  }
 
   return Array.from(collected);
 }
@@ -281,12 +168,12 @@ export async function discoverArticleLinks(source: SourceKey): Promise<string[]>
 
   for (const url of SOURCE_URLS[source]) {
     try {
-      const links = source === "vneconomy" ? await parseVnEconomyEndpoint(url) : await parseHtmlLinks(url, source);
+      const links = await parseHtmlLinks(url, source);
       for (const link of links) collected.add(link);
     } catch {
       // ignore one source endpoint failing
     }
   }
 
-  return Array.from(collected).slice(0, source === "vneconomy" ? 20 : 12);
+  return Array.from(collected).slice(0, 18);
 }

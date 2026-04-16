@@ -27,6 +27,7 @@ const BAD_VNECONOMY_PREFIXES = [
   "thi-truong",
   "phap-ly",
   "khung-phap-ly",
+  "san-pham-thi-truong",
 ];
 
 const BAD_VNECONOMY_TITLE_PATTERNS = [
@@ -43,6 +44,7 @@ const BAD_VNECONOMY_TITLE_PATTERNS = [
   /^podcast/i,
   /^infographics/i,
   /^thị trường$/i,
+  /^sản phẩm\s*-\s*thị trường$/i,
 ];
 
 const BAD_TEXT_SNIPPETS = [
@@ -54,35 +56,12 @@ const BAD_TEXT_SNIPPETS = [
   "Bản quyền thuộc về Tạp chí Kinh tế Việt Nam",
 ];
 
-const NGHIENCUU_RELEVANT_KEYWORDS = [
-  "asean",
-  "trung quốc",
-  "mỹ",
-  "nga",
-  "ukraine",
-  "nato",
-  "eu",
-  "iran",
-  "israel",
-  "myanmar",
-  "trump",
-  "chiến tranh",
-  "hòa bình",
-  "địa chính trị",
-  "thương mại",
-  "kinh tế",
-  "an ninh",
-  "biển đông",
-  "năng lượng",
-  "thuế",
-  "chuỗi cung ứng",
-  "logistics",
-  "fed",
-  "lạm phát",
-  "tiền tệ",
-  "ngân hàng",
-  "khu vực",
-  "đông nam á",
+const BAD_NCQT_TITLE_PATTERNS = [
+  /^thế giới hôm nay/i,
+  /^\d{1,2}\/\d{1,2}\/\d{4}\s*:/i,
+  /ngày này năm/i,
+  /lịch sử/i,
+  /tự sát/i,
 ];
 
 function slugFromUrl(url: string) {
@@ -91,25 +70,12 @@ function slugFromUrl(url: string) {
   return last.replace(/\.htm$/i, "").replace(/[^a-zA-Z0-9\-À-ỹ]+/g, "-").toLowerCase();
 }
 
-function normalizeSpace(text: string) {
-  return text.replace(/\s+/g, " ").trim();
-}
-
 function cleanTitle(title: string, source: SourceKey) {
-  const trimmed = normalizeSpace(title);
-  if (source === "vneconomy") return trimmed.replace(/\s*-\s*VnEconomy$/i, "").trim();
-  if (source === "nghiencuuquocte") return trimmed.replace(/\s*[|｜]\s*Nghiên cứu Quốc tế$/i, "").trim();
+  const trimmed = title.replace(/\s+/g, " ").trim();
+  if (source === "vneconomy") {
+    return trimmed.replace(/\s*-\s*VnEconomy$/i, "").trim();
+  }
   return trimmed;
-}
-
-function isNoiseParagraph(text: string, source: SourceKey) {
-  const cleaned = normalizeSpace(text);
-  if (!cleaned) return true;
-  if (cleaned.length < 60) return true;
-  if (BAD_TEXT_SNIPPETS.some((snippet) => cleaned.includes(snippet))) return true;
-  if (/^(xem thêm|bài liên quan|đọc thêm)\s*:/i.test(cleaned)) return true;
-  if (source === "nghiencuuquocte" && /^nguồn\s*:/i.test(cleaned) && cleaned.length < 260) return true;
-  return false;
 }
 
 function extractParagraphs($: cheerio.CheerioAPI, source: SourceKey) {
@@ -127,20 +93,21 @@ function extractParagraphs($: cheerio.CheerioAPI, source: SourceKey) {
 
   for (const selector of selectors) {
     const texts = $(selector)
-      .map((_, el) => normalizeSpace($(el).text()))
+      .map((_, el) => $(el).text().replace(/\s+/g, " ").trim())
       .get()
       .filter(Boolean)
-      .filter((text) => !isNoiseParagraph(text, source));
+      .filter((text) => text.length > 60)
+      .filter((text) => !BAD_TEXT_SNIPPETS.some((snippet) => text.includes(snippet)));
 
     if (texts.length >= 5) return texts;
   }
 
   return $("p")
-    .map((_, el) => normalizeSpace($(el).text()))
+    .map((_, el) => $(el).text().replace(/\s+/g, " ").trim())
     .get()
-    .filter(Boolean)
-    .filter((text) => !isNoiseParagraph(text, source))
-    .slice(0, 14);
+    .filter((text) => text.length > 80)
+    .filter((text) => !BAD_TEXT_SNIPPETS.some((snippet) => text.includes(snippet)))
+    .slice(0, 12);
 }
 
 function extractText($: cheerio.CheerioAPI, source: SourceKey) {
@@ -152,20 +119,11 @@ function extractTitle($: cheerio.CheerioAPI) {
 }
 
 function extractExcerpt($: cheerio.CheerioAPI) {
-  return $("meta[property='og:description']").attr("content") || $("meta[name='description']").attr("content") || "";
-}
-
-function cleanExcerpt(rawExcerpt: string, content: string, source: SourceKey) {
-  const excerpt = normalizeSpace(rawExcerpt);
-  if (!excerpt) {
-    return normalizeSpace(content.split(/\n\n+/).find(Boolean) || "").slice(0, 260);
-  }
-
-  if (source === "nghiencuuquocte" && /^nguồn\s*:/i.test(excerpt)) {
-    return normalizeSpace(content.split(/\n\n+/).find(Boolean) || "").slice(0, 260);
-  }
-
-  return excerpt;
+  return (
+    $("meta[property='og:description']").attr("content") ||
+    $("meta[name='description']").attr("content") ||
+    ""
+  );
 }
 
 function extractImage($: cheerio.CheerioAPI, url: string) {
@@ -208,28 +166,20 @@ function extractPublishedAt($: cheerio.CheerioAPI, url: string, source: SourceKe
     }
   }
 
-  return undefined;
+  return new Date().toISOString();
 }
 
-function isFreshIsoDate(value: string | undefined, maxDays = 4) {
-  if (!value) return false;
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return false;
+function isRecentEnough(source: SourceKey, publishedAt: string) {
+  if (source !== "nghiencuuquocte") return true;
+  const date = new Date(publishedAt);
   const diffDays = (Date.now() - date.getTime()) / (1000 * 60 * 60 * 24);
-  return diffDays >= 0 && diffDays <= maxDays;
+  return diffDays >= 0 && diffDays <= 4;
 }
 
-function isRelevantNghienCuuArticle(title: string, content: string) {
-  const text = `${title} ${content}`.toLowerCase();
-  return NGHIENCUU_RELEVANT_KEYWORDS.some((keyword) => text.includes(keyword));
-}
-
-function isHistoricalFeature(title: string, content: string) {
-  const lowerTitle = title.toLowerCase();
-  if (/^\d{1,2}\/\d{1,2}\/\d{4}\s*:/.test(lowerTitle)) return true;
-  if (lowerTitle.startsWith("ngày này năm")) return true;
-  if (content.toLowerCase().includes("vào ngày này năm") && !isRelevantNghienCuuArticle(title, content)) return true;
-  return false;
+function isGenericCategoryTitle(title: string) {
+  const normalized = title.replace(/\s+/g, " ").trim();
+  const wordCount = normalized.split(/\s+/).length;
+  return /^[\p{L}\d\s]+\s-\s[\p{L}\d\s]+$/u.test(normalized) && wordCount <= 6;
 }
 
 function shouldRejectPage(params: {
@@ -238,29 +188,25 @@ function shouldRejectPage(params: {
   excerpt: string;
   content: string;
   source: SourceKey;
-  publishedAt?: string;
 }) {
-  const { url, title, excerpt, content, source, publishedAt } = params;
+  const { url, title, content, source } = params;
   const slug = slugFromUrl(url);
-  const cleanedTitle = cleanTitle(title, source);
   const paragraphCount = content.split(/\n\n+/).filter(Boolean).length;
-  const wordCount = cleanedTitle.split(/\s+/).filter(Boolean).length;
 
-  if (!cleanedTitle || cleanedTitle.length < 18) return true;
-  if (!content || content.length < 850) return true;
+  if (!title || title.length < 20) return true;
+  if (!content || content.length < 600) return true;
   if (paragraphCount < 4) return true;
 
   if (source === "vneconomy") {
+    if (!url.endsWith(".htm")) return true;
     if (BAD_VNECONOMY_PREFIXES.some((prefix) => slug === prefix || slug.startsWith(prefix + "-"))) return true;
-    if (BAD_VNECONOMY_TITLE_PATTERNS.some((pattern) => pattern.test(cleanedTitle))) return true;
-    if (wordCount <= 4) return true;
-    if (excerpt.trim().length < 24 && paragraphCount < 6) return true;
+    if (BAD_VNECONOMY_TITLE_PATTERNS.some((pattern) => pattern.test(title))) return true;
+    if (isGenericCategoryTitle(title)) return true;
   }
 
   if (source === "nghiencuuquocte") {
-    if (!isFreshIsoDate(publishedAt, 4)) return true;
-    if (!isRelevantNghienCuuArticle(cleanedTitle, content)) return true;
-    if (isHistoricalFeature(cleanedTitle, content)) return true;
+    if (!/\/\d{4}\/\d{2}\/\d{2}\//.test(url)) return true;
+    if (BAD_NCQT_TITLE_PATTERNS.some((pattern) => pattern.test(title))) return true;
   }
 
   return false;
@@ -269,23 +215,26 @@ function shouldRejectPage(params: {
 export async function parseArticle(url: string, source: SourceKey): Promise<ArticleRecord | null> {
   const sourceLabel = source === "vneconomy" ? "VnEconomy" : "Nghiên cứu Quốc tế";
 
-  const res = await fetch(url, {
-    headers: { "user-agent": "newsroom-desk-final/1.0" },
+  const html = await fetch(url, {
+    headers: { "user-agent": "news-dashboard-final/1.0" },
     next: { revalidate: 1800 },
-  });
+  }).then((res) => res.text());
 
-  if (!res.ok) return null;
-
-  const html = await res.text();
   const $ = cheerio.load(html);
 
   const title = cleanTitle(extractTitle($), source);
+  const excerpt = extractExcerpt($).replace(/\s+/g, " ").trim();
   const content = extractText($, source);
-  const excerpt = cleanExcerpt(extractExcerpt($), content, source);
   const imageUrl = extractImage($, url);
   const publishedAt = extractPublishedAt($, url, source);
 
-  if (shouldRejectPage({ url, title, excerpt, content, source, publishedAt })) return null;
+  if (shouldRejectPage({ url, title, excerpt, content, source })) {
+    return null;
+  }
+
+  if (!isRecentEnough(source, publishedAt)) {
+    return null;
+  }
 
   const articleType = detectArticleType(source, title, content);
   const promotional = isPromotionalArticle(title, excerpt, content);
@@ -309,7 +258,7 @@ export async function parseArticle(url: string, source: SourceKey): Promise<Arti
     excerpt,
     content,
     imageUrl,
-    publishedAt: publishedAt || new Date().toISOString(),
+    publishedAt,
     articleType,
     importanceLevel: level,
     importanceScore: score,
