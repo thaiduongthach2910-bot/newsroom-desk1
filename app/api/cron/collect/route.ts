@@ -28,7 +28,7 @@ async function collectSource(source: SourceKey) {
   return results;
 }
 
-async function runCollect(request: Request) {
+export async function GET(request: Request) {
   if (!authorized(request)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
@@ -59,10 +59,6 @@ async function runCollect(request: Request) {
   }
 }
 
-export async function GET(request: Request) {
-  return runCollect(request);
-}
-
 export async function POST(request: Request) {
-  return runCollect(request);
+  return GET(request);
 }

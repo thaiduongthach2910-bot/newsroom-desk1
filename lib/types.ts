@@ -33,11 +33,18 @@ export interface ArticleRecord {
   summary: SummaryBlock;
 }
 
+export interface DailyDigestItem {
+  slug: string;
+  title?: string;
+  sourceLabel?: string;
+}
+
 export interface DailyDigest {
   date: string;
   title: string;
   intro: string;
   articleSlugs: string[];
+  items?: DailyDigestItem[];
 }
 
 export interface HomepageData {

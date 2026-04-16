@@ -11,6 +11,39 @@ function renderParagraphs(text: string) {
   return text.split("\n").filter(Boolean).map((paragraph, index) => <p key={index}>{paragraph}</p>);
 }
 
+function renderTable(tableData?: Array<Record<string, string | number>>) {
+  if (!tableData || tableData.length === 0) return null;
+
+  const keys = Object.keys(tableData[0]);
+  if (keys.length < 2) return null;
+
+  return (
+    <div className="rounded-[1.35rem] border border-black/10 bg-white/75 p-4">
+      <p className="text-xs uppercase tracking-[0.18em] text-[var(--accent-red)]">Bảng rút nhanh</p>
+      <div className="mt-3 overflow-x-auto">
+        <table className="min-w-full text-sm">
+          <thead>
+            <tr className="border-b border-black/10 text-left text-[var(--ink-soft)]">
+              {keys.map((key) => (
+                <th key={key} className="px-2 py-2 font-medium">{key}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {tableData.map((row, index) => (
+              <tr key={index} className="border-b border-black/5">
+                {keys.map((key) => (
+                  <td key={key} className="px-2 py-2 align-top text-[var(--ink-soft)]">{String(row[key] ?? "")}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 export default async function ArticlePage({
   params,
 }: {
@@ -85,6 +118,7 @@ export default async function ArticlePage({
                       <p className="mt-2 text-sm leading-7 text-[var(--ink-soft)]">{article.summary.cautionNote}</p>
                     </div>
                   </div>
+                  {renderTable(article.summary.tableData)}
                   <div className="rounded-[1.35rem] border border-black/10 bg-white/75 p-4">
                     <p className="text-xs uppercase tracking-[0.18em] text-[var(--accent-red)]">Kết luận</p>
                     <p className="mt-2 text-sm leading-7 text-[var(--ink-soft)]">{article.summary.conclusionText}</p>
@@ -135,6 +169,10 @@ export default async function ArticlePage({
                 <p>
                   <strong className="text-[var(--ink)]">Giờ đăng:</strong>{" "}
                   {new Date(article.publishedAt).toLocaleString("vi-VN")}
+                </p>
+                <p>
+                  <strong className="text-[var(--ink)]">Kiểu sơ đồ gợi ý:</strong>{" "}
+                  {article.summary.diagramHint || "none"}
                 </p>
               </div>
             </div>

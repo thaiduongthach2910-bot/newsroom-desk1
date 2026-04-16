@@ -39,7 +39,11 @@ function mapArticleRow(row: any): ArticleRecord {
     sourceLabel: sourceName ?? "Nguồn tin",
     url: row.url,
     title: row.title,
-    excerpt: row.article_summaries?.summary_short || row.article_summaries?.[0]?.summary_short || row.clean_text?.slice(0, 220) || "",
+    excerpt:
+      row.article_summaries?.summary_short ||
+      row.article_summaries?.[0]?.summary_short ||
+      row.clean_text?.slice(0, 220) ||
+      "",
     content: row.clean_text || row.raw_text || "",
     imageUrl: row.image_url || row.output_json?.imageUrl || undefined,
     publishedAt: row.published_at || row.scraped_at || new Date().toISOString(),
@@ -123,6 +127,7 @@ export async function getDigest(): Promise<DailyDigest | null> {
     title: data.title,
     intro: data.intro_text || "",
     articleSlugs: data.digest_json?.articleSlugs || [],
+    items: data.digest_json?.items || [],
   };
 }
 
@@ -155,26 +160,26 @@ export async function storeArticle(article: ArticleRecord) {
 
   const { data: upsertedArticle, error: articleError } = await supabase
     .from("articles")
-.upsert(
-  {
-    source_id: sourceId,
-    url: article.url,
-    title: article.title,
-    published_at: article.publishedAt,
-    raw_text: article.content,
-    clean_text: article.content,
-    author_name: null,
-    article_type: article.articleType,
-    is_promotional: article.isPromotional,
-    keep_article: article.keepArticle,
-    importance_score: article.importanceScore,
-    importance_level: article.importanceLevel,
-    status: "summarized",
-  },
-  { onConflict: "url" }
-)
-.select("id")
-.single();
+    .upsert(
+      {
+        source_id: sourceId,
+        url: article.url,
+        title: article.title,
+        published_at: article.publishedAt,
+        raw_text: article.content,
+        clean_text: article.content,
+        author_name: null,
+        article_type: article.articleType,
+        is_promotional: article.isPromotional,
+        keep_article: article.keepArticle,
+        importance_score: article.importanceScore,
+        importance_level: article.importanceLevel,
+        status: "summarized",
+      },
+      { onConflict: "url" }
+    )
+    .select("id")
+    .single();
 
   if (articleError) throw articleError;
 
@@ -214,7 +219,7 @@ export async function storeDigest(digest: DailyDigest) {
         digest_date: digest.date,
         title: digest.title,
         intro_text: digest.intro,
-        digest_json: { articleSlugs: digest.articleSlugs },
+        digest_json: { articleSlugs: digest.articleSlugs, items: digest.items || [] },
       },
       { onConflict: "digest_date" }
     )

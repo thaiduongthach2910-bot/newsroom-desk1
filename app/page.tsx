@@ -33,16 +33,16 @@ export default async function HomePage() {
             <SectionHeading
               eyebrow="Editorial note"
               title="Bản đọc tin kiểu newsroom"
-              description="Cảm hứng thị giác lấy từ các trang báo lớn: headline serif mạnh, nhịp dàn trang bất đối xứng, ảnh bìa lớn và khối digest riêng cho bản tin sáng."
+              description="Giao diện này đã chạy thật; bước tiếp theo là thay nội dung demo bằng pipeline đọc bài thật, tóm tắt sâu hơn theo từng nguồn, và cron cập nhật tự động mỗi ngày."
             />
             <div className="paper-card rounded-[2rem] p-6">
               <div className="grid-ink rounded-[1.4rem] border border-black/10 p-5">
-                <p className="text-xs uppercase tracking-[0.18em] text-[var(--accent-red)]">Why this layout works</p>
+                <p className="text-xs uppercase tracking-[0.18em] text-[var(--accent-red)]">What comes next</p>
                 <ul className="mt-4 space-y-3 text-sm leading-7 text-[var(--ink-soft)]">
-                  <li>• Có hero story lớn để định nhịp đọc ngay từ đầu.</li>
-                  <li>• Có digest sáng riêng thay vì trộn lẫn mọi bài mới.</li>
-                  <li>• Có nhiều ảnh bìa và nhãn nguồn để nhìn giống một newsroom thật.</li>
-                  <li>• Mỗi bài có trang riêng và ô chat, nên chiều sâu nằm ở trong bài chứ không đè nặng trang chủ.</li>
+                  <li>• VnEconomy ưu tiên lấy link từ RSS chính thức rồi mới fallback sang HTML.</li>
+                  <li>• Nghiên cứu Quốc tế được đọc như bài bình luận/biên dịch, không như tin thuần.</li>
+                  <li>• Prompt tóm tắt đã đổi sang kiểu dài hơn, bám sát 2 mẫu output bạn yêu cầu.</li>
+                  <li>• Cron sẽ bơm bài thật vào dashboard thay vì dùng dữ liệu seed/demo.</li>
                 </ul>
               </div>
             </div>
