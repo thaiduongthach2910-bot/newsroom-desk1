@@ -2,7 +2,7 @@ import { createClient } from "@supabase/supabase-js";
 import { mockArticles, mockDigest } from "@/lib/mock-data";
 import { ArticleRecord, DailyDigest, HomepageData, SourceKey } from "@/lib/types";
 
-function getSupabaseClient() {
+function getSupabaseClient(): any {
   const url = process.env.SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
@@ -39,7 +39,11 @@ function mapArticleRow(row: any): ArticleRecord {
     sourceLabel: sourceName ?? "Nguồn tin",
     url: row.url,
     title: row.title,
-    excerpt: row.article_summaries?.summary_short || row.article_summaries?.[0]?.summary_short || row.clean_text?.slice(0, 220) || "",
+    excerpt:
+      row.article_summaries?.summary_short ||
+      row.article_summaries?.[0]?.summary_short ||
+      row.clean_text?.slice(0, 220) ||
+      "",
     content: row.clean_text || row.raw_text || "",
     imageUrl: row.image_url || row.output_json?.imageUrl || undefined,
     publishedAt: row.published_at || row.scraped_at || new Date().toISOString(),
@@ -145,12 +149,15 @@ export async function getHomepageData(): Promise<HomepageData> {
   };
 }
 
-async function findExistingArticleId(supabase: ReturnType<typeof createClient>, params: {
-  sourceId: number;
-  url: string;
-  title: string;
-  publishedAt: string;
-}) {
+async function findExistingArticleId(
+  supabase: any,
+  params: {
+    sourceId: number;
+    url: string;
+    title: string;
+    publishedAt: string;
+  }
+): Promise<string | undefined> {
   const exactUrl = await supabase
     .from("articles")
     .select("id")
@@ -178,12 +185,13 @@ export async function storeArticle(article: ArticleRecord) {
 
   const sourceName = article.source === "vneconomy" ? "VnEconomy" : "Nghien cuu Quoc te";
 
-  const { data: sourceRow } = await supabase
+  const sourceQuery = await supabase
     .from("sources")
     .select("id")
     .eq("name", sourceName)
     .maybeSingle();
 
+  const sourceRow = sourceQuery.data as { id?: number } | null;
   const sourceId = sourceRow?.id;
   if (!sourceId) throw new Error(`Không tìm thấy source_id cho ${sourceName}`);
 
@@ -213,7 +221,7 @@ export async function storeArticle(article: ArticleRecord) {
 
     if (updateArticleError) throw updateArticleError;
   } else {
-    const { data: insertedArticle, error: insertArticleError } = await supabase
+    const insertQuery = await supabase
       .from("articles")
       .insert({
         source_id: sourceId,
@@ -233,8 +241,9 @@ export async function storeArticle(article: ArticleRecord) {
       .select("id")
       .single();
 
-    if (insertArticleError) throw insertArticleError;
-    articleId = insertedArticle.id;
+    if (insertQuery.error) throw insertQuery.error;
+    const insertedArticle = insertQuery.data as { id: string } | null;
+    articleId = insertedArticle?.id;
   }
 
   const { error: summaryError } = await supabase.from("article_summaries").upsert(
@@ -258,46 +267,4 @@ export async function storeArticle(article: ArticleRecord) {
   if (summaryError) throw summaryError;
 
   return { mode: existingId ? ("updated" as const) : ("stored" as const), articleId };
-}
-
-export async function storeDigest(digest: DailyDigest) {
-  const supabase = getSupabaseClient();
-  if (!supabase) return { mode: "preview" as const };
-
-  const { data: digestRow, error: digestError } = await supabase
-    .from("daily_digests")
-    .upsert(
-      {
-        digest_date: digest.date,
-        title: digest.title,
-        intro_text: digest.intro,
-        digest_json: { articleSlugs: digest.articleSlugs, items: digest.items || [] },
-      },
-      { onConflict: "digest_date" }
-    )
-    .select("id")
-    .single();
-
-  if (digestError) throw digestError;
-
-  const digestId = digestRow.id;
-
-  const articles = await getArticles();
-  const bySlug = new Map(articles.map((article) => [article.slug, article.id]));
-
-  for (const [index, slug] of digest.articleSlugs.entries()) {
-    const articleId = bySlug.get(slug);
-    if (!articleId) continue;
-
-    await supabase.from("digest_articles").upsert(
-      {
-        digest_id: digestId,
-        article_id: articleId,
-        rank_order: index + 1,
-      },
-      { onConflict: "digest_id,article_id" }
-    );
-  }
-
-  return { mode: "stored" as const, digestId };
 }
