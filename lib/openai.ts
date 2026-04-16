@@ -265,17 +265,22 @@ Hãy trả lời:
 - Nếu câu hỏi vượt ngoài dữ liệu của bài, nói rõ là bài hiện tại không đủ để khẳng định.
 `;
 
- try {
-  const response = await withRetry(() =>
-    client.responses.create({
-      model: process.env.OPENAI_CHAT_MODEL || "gpt-4o-mini",
-      input: prompt,
-      store: false,
-      text: { verbosity: "medium" },
-    })
-  );
+export async function answerArticleChat(
+  prompt: string,
+  summary: SummaryBlock
+) {
+  try {
+    const response = await withRetry(() =>
+      client.responses.create({
+        model: process.env.OPENAI_CHAT_MODEL || "gpt-4o-mini",
+        input: prompt,
+        store: false,
+        text: { verbosity: "medium" },
+      })
+    );
 
-  return response.output_text.trim();
-} catch {
-  return `Tôi chưa trả lời được bằng AI lúc này. Dựa trên bài đang mở, ý chính cần giữ lại là: ${summary.keyTakeaway}`;
+    return response.output_text.trim();
+  } catch {
+    return `Tôi chưa trả lời được bằng AI lúc này. Dựa trên bài đang mở, ý chính cần giữ lại là: ${summary.keyTakeaway}`;
+  }
 }
