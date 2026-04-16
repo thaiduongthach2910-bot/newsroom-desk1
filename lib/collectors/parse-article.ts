@@ -69,9 +69,7 @@ function extractParagraphs($: cheerio.CheerioAPI, source: SourceKey) {
 }
 
 function extractText($: cheerio.CheerioAPI, source: SourceKey) {
-  return extractParagraphs($, source).join("
-
-");
+  return extractParagraphs($, source).join("\n\n");
 }
 
 function extractTitle($: cheerio.CheerioAPI) {

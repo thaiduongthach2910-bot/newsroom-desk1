@@ -69,8 +69,7 @@ async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
 }
 
 function summaryFallback(title: string, excerpt: string, content: string, sourceLabel: string): SummaryBlock {
-  const short = excerpt || content.split(/
-+/).find((x) => x.trim().length > 80)?.trim() || content.slice(0, 220);
+  const short = excerpt || content.split(/\n+/).find((x) => x.trim().length > 80)?.trim() || content.slice(0, 220);
   const isOpinion = sourceLabel.toLowerCase().includes("nghiên") || sourceLabel.toLowerCase().includes("nghien");
 
   return {
