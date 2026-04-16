@@ -96,7 +96,13 @@ export async function getArticles(source?: SourceKey): Promise<ArticleRecord[]> 
     return source ? mockArticles.filter((article) => article.source === source) : mockArticles;
   }
 
-  const mapped = data.map(mapArticleRow);
+  const deduped = new Map<string, any>();
+  for (const row of data) {
+    const key = `${row.url}::${row.title}::${row.published_at}`;
+    if (!deduped.has(key)) deduped.set(key, row);
+  }
+
+  const mapped = Array.from(deduped.values()).map(mapArticleRow);
   return source ? mapped.filter((article) => article.source === source) : mapped;
 }
 
@@ -139,6 +145,31 @@ export async function getHomepageData(): Promise<HomepageData> {
   };
 }
 
+async function findExistingArticleId(supabase: ReturnType<typeof createClient>, params: {
+  sourceId: number;
+  url: string;
+  title: string;
+  publishedAt: string;
+}) {
+  const exactUrl = await supabase
+    .from("articles")
+    .select("id")
+    .eq("url", params.url)
+    .maybeSingle();
+
+  if (exactUrl.data?.id) return exactUrl.data.id as string;
+
+  const sameTitleAndTime = await supabase
+    .from("articles")
+    .select("id")
+    .eq("source_id", params.sourceId)
+    .eq("title", params.title)
+    .eq("published_at", params.publishedAt)
+    .maybeSingle();
+
+  return sameTitleAndTime.data?.id as string | undefined;
+}
+
 export async function storeArticle(article: ArticleRecord) {
   const supabase = getSupabaseClient();
   if (!supabase) return { mode: "preview" as const };
@@ -154,10 +185,35 @@ export async function storeArticle(article: ArticleRecord) {
   const sourceId = sourceRow?.id;
   if (!sourceId) throw new Error(`Không tìm thấy source_id cho ${sourceName}`);
 
-  const { data: upsertedArticle, error: articleError } = await supabase
-    .from("articles")
-    .upsert(
-      {
+  const existingId = await findExistingArticleId(supabase, {
+    sourceId,
+    url: article.url,
+    title: article.title,
+    publishedAt: article.publishedAt,
+  });
+
+  let articleId = existingId;
+
+  if (articleId) {
+    const { error: updateArticleError } = await supabase
+      .from("articles")
+      .update({
+        raw_text: article.content,
+        clean_text: article.content,
+        article_type: article.articleType,
+        is_promotional: article.isPromotional,
+        keep_article: article.keepArticle,
+        importance_score: article.importanceScore,
+        importance_level: article.importanceLevel,
+        status: "summarized",
+      })
+      .eq("id", articleId);
+
+    if (updateArticleError) throw updateArticleError;
+  } else {
+    const { data: insertedArticle, error: insertArticleError } = await supabase
+      .from("articles")
+      .insert({
         source_id: sourceId,
         url: article.url,
         title: article.title,
@@ -171,15 +227,13 @@ export async function storeArticle(article: ArticleRecord) {
         importance_score: article.importanceScore,
         importance_level: article.importanceLevel,
         status: "summarized",
-      },
-      { onConflict: "url" }
-    )
-    .select("id")
-    .single();
+      })
+      .select("id")
+      .single();
 
-  if (articleError) throw articleError;
-
-  const articleId = upsertedArticle.id;
+    if (insertArticleError) throw insertArticleError;
+    articleId = insertedArticle.id;
+  }
 
   const { error: summaryError } = await supabase.from("article_summaries").upsert(
     {
@@ -201,7 +255,7 @@ export async function storeArticle(article: ArticleRecord) {
 
   if (summaryError) throw summaryError;
 
-  return { mode: "stored" as const, articleId };
+  return { mode: existingId ? ("updated" as const) : ("stored" as const), articleId };
 }
 
 export async function storeDigest(digest: DailyDigest) {
