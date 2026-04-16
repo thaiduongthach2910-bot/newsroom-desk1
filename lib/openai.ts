@@ -1,6 +1,7 @@
 import OpenAI from "openai";
 import { SummaryBlock } from "@/lib/types";
 
+
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -191,30 +192,30 @@ export async function generateSummary(params: {
 
   try {
     const response = await withRetry(() =>
-  client.responses.create({
-    model: process.env.OPENAI_SUMMARY_MODEL || "gpt-4o-mini",
-    input: [
-      {
-        role: "system",
-        content: "Bạn là biên tập viên phân tích tin tức bằng tiếng Việt. Trả về dữ liệu có cấu trúc đúng schema.",
+      client.responses.create({
+      model: process.env.OPENAI_SUMMARY_MODEL || "gpt-4o-mini",
+      input: [
+        {
+          role: "system",
+          content: "Bạn là biên tập viên phân tích tin tức bằng tiếng Việt. Trả về dữ liệu có cấu trúc đúng schema.",
+        },
+        {
+          role: "user",
+          content: prompt,
+        },
+      ],
+      store: false,
+      text: {
+        format: {
+          type: "json_schema",
+          name: "news_summary",
+          schema: SUMMARY_SCHEMA,
+          strict: true,
+        },
+        verbosity: "medium",
       },
-      {
-        role: "user",
-        content: prompt,
-      },
-    ],
-    store: false,
-    text: {
-      format: {
-        type: "json_schema",
-        name: "news_summary",
-        schema: SUMMARY_SCHEMA,
-        strict: true,
-      },
-      verbosity: "medium",
-    },
-  })
-);
+      })
+    );
 
     const parsed = normalizeSummary(JSON.parse(response.output_text));
     return parsed ?? summaryFallback(title, excerpt, content, sourceLabel);
@@ -264,12 +265,7 @@ Hãy trả lời:
 - Có good will
 - Nếu câu hỏi vượt ngoài dữ liệu của bài, nói rõ là bài hiện tại không đủ để khẳng định.
 `;
-}
 
-export async function answerArticleChat(
-  prompt: string,
-  summary: SummaryBlock
-) {
   try {
     const response = await withRetry(() =>
       client.responses.create({
