@@ -152,22 +152,24 @@ async function findExistingArticleId(supabase: ReturnType<typeof createClient>, 
   publishedAt: string;
 }) {
   const exactUrl = await supabase
-    .from("articles")
-    .select("id")
-    .eq("url", params.url)
-    .maybeSingle();
+  .from("articles")
+  .select("id")
+  .eq("url", article.url)
+  .maybeSingle();
 
-  if (exactUrl.data?.id) return exactUrl.data.id as string;
+const exactUrlData = exactUrl.data as { id?: string } | null;
+if (exactUrlData?.id) return exactUrlData.id;
 
   const sameTitleAndTime = await supabase
-    .from("articles")
-    .select("id")
-    .eq("source_id", params.sourceId)
-    .eq("title", params.title)
-    .eq("published_at", params.publishedAt)
-    .maybeSingle();
+  .from("articles")
+  .select("id")
+  .eq("source_id", params.sourceId)
+  .eq("title", params.title)
+  .eq("published_at", params.publishedAt)
+  .maybeSingle();
 
-  return sameTitleAndTime.data?.id as string | undefined;
+const sameTitleAndTimeData = sameTitleAndTime.data as { id?: string } | null;
+return sameTitleAndTimeData?.id;
 }
 
 export async function storeArticle(article: ArticleRecord) {
