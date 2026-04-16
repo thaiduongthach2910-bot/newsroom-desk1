@@ -30,7 +30,6 @@ async function collectSource(source: SourceKey) {
         stored: "error",
         error: error instanceof Error ? error.message : "Unknown error",
       });
-      continue;
     }
   }
 
@@ -42,30 +41,20 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  try {
-    const vneconomy = await collectSource("vneconomy");
-    const nghiencuuquocte = await collectSource("nghiencuuquocte");
+  const vneconomy = await collectSource("vneconomy");
+  const nghiencuuquocte = await collectSource("nghiencuuquocte");
 
-    return NextResponse.json({
-      ok: true,
-      summary: {
-        vneconomy: vneconomy.length,
-        nghiencuuquocte: nghiencuuquocte.length,
-      },
-      items: {
-        vneconomy,
-        nghiencuuquocte,
-      },
-    });
-  } catch (error) {
-    return NextResponse.json(
-      {
-        ok: false,
-        error: error instanceof Error ? error.message : "Unknown error",
-      },
-      { status: 500 }
-    );
-  }
+  return NextResponse.json({
+    ok: true,
+    summary: {
+      vneconomy: vneconomy.length,
+      nghiencuuquocte: nghiencuuquocte.length,
+    },
+    items: {
+      vneconomy,
+      nghiencuuquocte,
+    },
+  });
 }
 
 export async function POST(request: Request) {

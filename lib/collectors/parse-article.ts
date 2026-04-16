@@ -3,49 +3,75 @@ import { detectArticleType, isPromotionalArticle, scoreImportance } from "@/lib/
 import { ArticleRecord, SourceKey } from "@/lib/types";
 import { generateSummary } from "@/lib/openai";
 
+const BAD_VNECONOMY_SLUGS = new Set([
+  "podcast",
+  "chung-khoan",
+  "dien-dan",
+  "dien-dan-kinh-te-xanh",
+  "thi-truong-von",
+  "phap-ly-kinh-te-xanh",
+  "tai-chinh-ngan-hang",
+  "bao-hiem-tai-chinh",
+  "doanh-nghiep-niem-yet",
+  "e-magazine",
+  "emagazine",
+  "tieu-dung",
+  "thuong-vu-anh",
+  "infographics",
+]);
+
+const BAD_TEXT_SNIPPETS = [
+  "Với phương châm Đoàn kết - Dân chủ",
+  "Tạp chí Kinh tế Việt Nam",
+  "Editorial illustration for the dashboard mockup",
+];
+
 function slugFromUrl(url: string) {
   const pathname = new URL(url).pathname;
   const last = pathname.split("/").filter(Boolean).pop() || "article";
-  return last.replace(/\.htm$/, "").replace(/[^a-zA-Z0-9\-À-ỹ]+/g, "-").toLowerCase();
+  return last.replace(/\.htm$/i, "").replace(/[^a-zA-Z0-9\-À-ỹ]+/g, "-").toLowerCase();
 }
 
-function normalizeText(text: string) {
-  return text.replace(/\s+/g, " ").trim();
-}
-
-function extractParagraphs($: cheerio.CheerioAPI) {
-  const selectors = [
-    "article p",
-    ".entry-content p",
-    ".detail__content p",
-    ".detail-content p",
-    ".article-content p",
-    ".entry-content-main p",
-    ".post-content p",
-    "main p",
-  ];
+function extractParagraphs($: cheerio.CheerioAPI, source: SourceKey) {
+  const selectors = source === "vneconomy"
+    ? [
+        "article p",
+        ".detail__content p",
+        ".detail-content p",
+        ".article__body p",
+        ".article-content p",
+        "main article p",
+      ]
+    : [
+        "article p",
+        ".entry-content p",
+        ".post-content p",
+        ".td-post-content p",
+        "main article p",
+        "main p",
+      ];
 
   for (const selector of selectors) {
     const texts = $(selector)
-      .map((_, el) => normalizeText($(el).text()))
+      .map((_, el) => $(el).text().replace(/\s+/g, " ").trim())
       .get()
       .filter(Boolean)
-      .filter((text) => text.length > 45)
-      .filter((text) => !/^bản quyền thuộc/i.test(text.toLowerCase()));
+      .filter((text) => text.length > 55);
 
     if (texts.length >= 4) return texts;
   }
 
   return $("p")
-    .map((_, el) => normalizeText($(el).text()))
+    .map((_, el) => $(el).text().replace(/\s+/g, " ").trim())
     .get()
-    .filter((text) => text.length > 60)
-    .filter((text) => !/^bản quyền thuộc/i.test(text.toLowerCase()))
-    .slice(0, 20);
+    .filter((text) => text.length > 70)
+    .slice(0, 12);
 }
 
-function extractText($: cheerio.CheerioAPI) {
-  return extractParagraphs($).join("\n\n");
+function extractText($: cheerio.CheerioAPI, source: SourceKey) {
+  return extractParagraphs($, source).join("
+
+");
 }
 
 function extractTitle($: cheerio.CheerioAPI) {
@@ -60,7 +86,6 @@ function extractExcerpt($: cheerio.CheerioAPI) {
   return (
     $('meta[property="og:description"]').attr("content") ||
     $('meta[name="description"]').attr("content") ||
-    extractParagraphs($)[0] ||
     ""
   );
 }
@@ -80,82 +105,81 @@ function extractImage($: cheerio.CheerioAPI, url: string) {
   }
 }
 
-function extractPublishedAt($: cheerio.CheerioAPI) {
+function extractPublishedAtRaw($: cheerio.CheerioAPI) {
   return (
     $('meta[property="article:published_time"]').attr("content") ||
     $('meta[name="pubdate"]').attr("content") ||
+    $('meta[name="publish-date"]').attr("content") ||
     $("time").first().attr("datetime") ||
-    new Date().toISOString()
+    undefined
   );
 }
 
-function isRecentEnough(source: SourceKey, publishedAt: string) {
-  const published = new Date(publishedAt);
-  if (Number.isNaN(published.getTime())) return false;
-
-  const now = new Date();
-  const diffDays = (now.getTime() - published.getTime()) / (1000 * 60 * 60 * 24);
+function extractPublishedAt($: cheerio.CheerioAPI, url: string, source: SourceKey) {
+  const metaDate = extractPublishedAtRaw($);
+  if (metaDate) return metaDate;
 
   if (source === "nghiencuuquocte") {
-    return diffDays <= 7;
-  }
-
-  return diffDays <= 3;
-}
-
-function shouldRejectPage(params: {
-  url: string;
-  title: string;
-  excerpt: string;
-  content: string;
-  source: SourceKey;
-}) {
-  const { url, title, excerpt, content, source } = params;
-  const filename = url.split("/").pop()?.replace(/\.htm$/i, "").toLowerCase() || "";
-  const combined = `${title}\n${excerpt}\n${content}`.toLowerCase();
-  const paragraphCount = content.split(/\n\n+/).filter(Boolean).length;
-
-  if (!title || title.length < 20) return true;
-  if (!content || content.length < 600) return true;
-  if (paragraphCount < 4) return true;
-
-  if (source === "vneconomy") {
-    if (filename.split("-").length < 4) return true;
-    if (combined.includes("bản quyền thuộc tạp chí kinh tế việt nam") && content.length < 1200) return true;
-    if (/^podcast|^chung-khoan|^infographics|^emagazine|^tieu-dung|^thuong-vu-anh$/i.test(filename)) {
-      return true;
+    const match = url.match(/\/(\d{4})\/(\d{2})\/(\d{2})\//);
+    if (match) {
+      const [_, year, month, day] = match;
+      return `${year}-${month}-${day}T00:00:00.000Z`;
     }
   }
 
-  if (source === "nghiencuuquocte") {
-    if (!/\d{4}\/\d{2}\/\d{2}/.test(url)) return true;
-    if (combined.includes("thế giới hôm nay") || combined.includes("the world today")) return true;
+  return undefined;
+}
+
+function isFreshIsoDate(value: string | undefined, maxDays = 7) {
+  if (!value) return false;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return false;
+  const diffDays = (Date.now() - date.getTime()) / (1000 * 60 * 60 * 24);
+  return diffDays >= 0 && diffDays <= maxDays;
+}
+
+function looksLikeCategoryPage(source: SourceKey, url: string, title: string, content: string, publishedAt?: string) {
+  const slug = slugFromUrl(url);
+
+  if (source === "vneconomy") {
+    if (BAD_VNECONOMY_SLUGS.has(slug)) return true;
+    if ([...BAD_VNECONOMY_SLUGS].some((item) => slug.startsWith(item + "-"))) return true;
+    if (!publishedAt) return true;
+    if (title.endsWith(" - VnEconomy") && (slug.match(/-/g) || []).length <= 3) return true;
+    if (content.length < 800) return true;
   }
 
-  return false;
+  if (source === "nghiencuuquocte" && !isFreshIsoDate(publishedAt, 7)) {
+    return true;
+  }
+
+  return BAD_TEXT_SNIPPETS.some((snippet) => content.includes(snippet));
 }
 
 export async function parseArticle(url: string, source: SourceKey): Promise<ArticleRecord | null> {
   const sourceLabel = source === "vneconomy" ? "VnEconomy" : "Nghiên cứu Quốc tế";
 
-  const html = await fetch(url, {
-    headers: { "user-agent": "news-dashboard-v3/1.0" },
+  const res = await fetch(url, {
+    headers: { "user-agent": "news-dashboard-v4/1.0" },
     next: { revalidate: 1800 },
-  }).then((res) => res.text());
+  });
 
+  if (!res.ok) return null;
+
+  const html = await res.text();
   const $ = cheerio.load(html);
 
-  const title = normalizeText(extractTitle($));
-  const excerpt = normalizeText(extractExcerpt($));
-  const content = extractText($);
+  const title = extractTitle($);
+  const excerpt = extractExcerpt($);
+  const content = extractText($, source);
   const imageUrl = extractImage($, url);
-  const publishedAt = extractPublishedAt($);
+  const publishedAt = extractPublishedAt($, url, source);
 
-  if (shouldRejectPage({ url, title, excerpt, content, source })) {
+  if (!title || !content || content.length < 700) {
     return null;
   }
 
-  if (!isRecentEnough(source, publishedAt)) {
+  if (looksLikeCategoryPage(source, url, title, content, publishedAt)) {
     return null;
   }
 
@@ -181,7 +205,7 @@ export async function parseArticle(url: string, source: SourceKey): Promise<Arti
     excerpt,
     content,
     imageUrl,
-    publishedAt,
+    publishedAt: publishedAt || new Date().toISOString(),
     articleType,
     importanceLevel: level,
     importanceScore: score,

@@ -39,11 +39,7 @@ function mapArticleRow(row: any): ArticleRecord {
     sourceLabel: sourceName ?? "Nguồn tin",
     url: row.url,
     title: row.title,
-    excerpt:
-      row.article_summaries?.summary_short ||
-      row.article_summaries?.[0]?.summary_short ||
-      row.clean_text?.slice(0, 220) ||
-      "",
+    excerpt: row.article_summaries?.summary_short || row.article_summaries?.[0]?.summary_short || row.clean_text?.slice(0, 220) || "",
     content: row.clean_text || row.raw_text || "",
     imageUrl: row.image_url || row.output_json?.imageUrl || undefined,
     publishedAt: row.published_at || row.scraped_at || new Date().toISOString(),
