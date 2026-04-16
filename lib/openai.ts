@@ -1,6 +1,35 @@
 import OpenAI from "openai";
 import { SummaryBlock } from "@/lib/types";
 
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isRateLimitError(error: unknown) {
+  if (!error || typeof error !== "object") return false;
+
+  const e = error as { status?: number; code?: string };
+  return e.status === 429 || e.code === "rate_limit_exceeded";
+}
+
+async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
+  let attempt = 0;
+
+  while (true) {
+    try {
+      return await fn();
+    } catch (error) {
+      if (!isRateLimitError(error) || attempt >= maxRetries) {
+        throw error;
+      }
+
+      const delay = 1500 * Math.pow(2, attempt);
+      await sleep(delay);
+      attempt += 1;
+    }
+  }
+}
+
 const SUMMARY_SCHEMA = {
   type: "object",
   additionalProperties: false,
@@ -161,29 +190,31 @@ export async function generateSummary(params: {
   const prompt = buildSummaryPrompt(params);
 
   try {
-    const response = await client.responses.create({
-      model: process.env.OPENAI_SUMMARY_MODEL || "gpt-4o-mini",
-      input: [
-        {
-          role: "system",
-          content: "Bạn là biên tập viên phân tích tin tức bằng tiếng Việt. Trả về dữ liệu có cấu trúc đúng schema.",
-        },
-        {
-          role: "user",
-          content: prompt,
-        },
-      ],
-      store: false,
-      text: {
-        format: {
-          type: "json_schema",
-          name: "news_summary",
-          schema: SUMMARY_SCHEMA,
-          strict: true,
-        },
-        verbosity: "medium",
+    const response = await withRetry(() =>
+  client.responses.create({
+    model: process.env.OPENAI_SUMMARY_MODEL || "gpt-4o-mini",
+    input: [
+      {
+        role: "system",
+        content: "Bạn là biên tập viên phân tích tin tức bằng tiếng Việt. Trả về dữ liệu có cấu trúc đúng schema.",
       },
-    });
+      {
+        role: "user",
+        content: prompt,
+      },
+    ],
+    store: false,
+    text: {
+      format: {
+        type: "json_schema",
+        name: "news_summary",
+        schema: SUMMARY_SCHEMA,
+        strict: true,
+      },
+      verbosity: "medium",
+    },
+  })
+);
 
     const parsed = normalizeSummary(JSON.parse(response.output_text));
     return parsed ?? summaryFallback(title, excerpt, content, sourceLabel);
@@ -234,16 +265,17 @@ Hãy trả lời:
 - Nếu câu hỏi vượt ngoài dữ liệu của bài, nói rõ là bài hiện tại không đủ để khẳng định.
 `;
 
-  try {
-    const response = await client.responses.create({
+ try {
+  const response = await withRetry(() =>
+    client.responses.create({
       model: process.env.OPENAI_CHAT_MODEL || "gpt-4o-mini",
       input: prompt,
       store: false,
       text: { verbosity: "medium" },
-    });
+    })
+  );
 
-    return response.output_text.trim();
-  } catch {
-    return `Tôi chưa trả lời được bằng AI lúc này. Dựa trên bài đang mở, ý chính cần giữ lại là: ${summary.keyTakeaway}`;
-  }
+  return response.output_text.trim();
+} catch {
+  return `Tôi chưa trả lời được bằng AI lúc này. Dựa trên bài đang mở, ý chính cần giữ lại là: ${summary.keyTakeaway}`;
 }
