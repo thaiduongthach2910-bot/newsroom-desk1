@@ -264,6 +264,7 @@ Hãy trả lời:
 - Có good will
 - Nếu câu hỏi vượt ngoài dữ liệu của bài, nói rõ là bài hiện tại không đủ để khẳng định.
 `;
+}
 
 export async function answerArticleChat(
   prompt: string,
