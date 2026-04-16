@@ -7,7 +7,6 @@ function sleep(ms: number) {
 
 function isRateLimitError(error: unknown) {
   if (!error || typeof error !== "object") return false;
-
   const e = error as { status?: number; code?: string };
   return e.status === 429 || e.code === "rate_limit_exceeded";
 }
@@ -71,86 +70,86 @@ const SUMMARY_SCHEMA = {
   ],
 } as const;
 
-function collapseWhitespace(text: string) {
-  return text.replace(/\s+/g, " ").trim();
+function normalizeSpaces(value: string) {
+  return value.replace(/\s+/g, " ").trim();
 }
 
-function pickSentences(text: string, maxSentences = 2, maxChars = 320) {
-  const cleaned = collapseWhitespace(text);
-  if (!cleaned) return "";
-
-  const sentences = cleaned
-    .split(/(?<=[.!?…])\s+|(?<=[。！？])\s*/)
+function splitSentences(text: string) {
+  return normalizeSpaces(text)
+    .split(/(?<=[.!?…])\s+/)
     .map((part) => part.trim())
-    .filter(Boolean);
-
-  const selected: string[] = [];
-  for (const sentence of sentences) {
-    if (selected.join(" ").length + sentence.length > maxChars && selected.length > 0) break;
-    selected.push(sentence);
-    if (selected.length >= maxSentences) break;
-  }
-
-  return selected.join(" ") || cleaned.slice(0, maxChars);
+    .filter((part) => part.length > 30);
 }
 
-function firstUsefulParagraph(content: string) {
-  const parts = content
-    .split(/\n\n+/)
-    .map((part) => collapseWhitespace(part))
-    .filter((part) => part.length >= 80);
+function excerptOrFirstSentences(excerpt: string, content: string, maxSentences = 2) {
+  const excerptText = normalizeSpaces(excerpt);
+  if (excerptText.length >= 80) return excerptText;
 
-  return parts[0] || collapseWhitespace(content).slice(0, 400);
+  const sentences = splitSentences(content).slice(0, maxSentences);
+  if (sentences.length > 0) return sentences.join(" ");
+
+  return normalizeSpaces(content).slice(0, 280);
 }
 
-function detectTheme(title: string, excerpt: string, content: string) {
-  const text = `${title} ${excerpt} ${content}`.toLowerCase();
+function inferWhyItMatters(title: string, content: string, sourceLabel: string) {
+  const text = `${title} ${content}`.toLowerCase();
 
-  if (/(myanmar|asean|trump|mỹ|trung quốc|iran|israel|ukraine|nga)/.test(text)) {
-    return "địa chính trị và tác động chính sách";
-  }
-  if (/(thuế|lãi suất|fed|tỷ giá|ngân hàng|tài chính)/.test(text)) {
-    return "tiền tệ, tài chính và chi phí vốn";
-  }
-  if (/(xuất khẩu|nhập khẩu|logistics|chuỗi cung ứng|vận tải)/.test(text)) {
-    return "chuỗi cung ứng, thương mại và logistics";
-  }
-  if (/(ai|công nghệ|nền tảng|phần mềm|chip)/.test(text)) {
-    return "công nghệ và tác động thương mại";
+  if (sourceLabel.toLowerCase().includes("nghiên cứu") || sourceLabel.toLowerCase().includes("nghien")) {
+    return "Giá trị của bài nằm ở góc nhìn chiến lược: nó giúp người đọc hiểu cách một tác giả hoặc một nhóm chuyên gia diễn giải cục diện khu vực, từ đó ảnh hưởng tới cách nhìn về chính sách, liên minh và rủi ro địa chính trị.";
   }
 
-  return "tác động thực tế phía sau sự kiện";
+  if (/(thuế|chính sách|nghị định|quy định|luật)/i.test(text)) {
+    return "Bài này đáng chú ý vì nó có thể kéo theo thay đổi về chi phí tuân thủ, điều kiện kinh doanh hoặc cách doanh nghiệp phải điều chỉnh kế hoạch vận hành.";
+  }
+  if (/(lãi suất|tỷ giá|ngân hàng|trái phiếu|chứng khoán|vàng|dầu)/i.test(text)) {
+    return "Điểm quan trọng là tác động tới dòng tiền, định giá tài sản và kỳ vọng thị trường, chứ không chỉ là một diễn biến ngắn hạn để đọc cho biết.";
+  }
+  if (/(xuất khẩu|nhập khẩu|logistics|chuỗi cung ứng|cảng|vận tải)/i.test(text)) {
+    return "Bài này có ý nghĩa vì nó chạm vào chi phí thương mại, chuỗi cung ứng và khả năng giao hàng — những thứ ảnh hưởng trực tiếp tới biên lợi nhuận và kế hoạch kinh doanh.";
+  }
+
+  return "Bài này đáng quan tâm vì nó không dừng ở lớp thông tin bề mặt; thứ cần nhìn là hệ quả với thị trường, doanh nghiệp hoặc môi trường chính sách phía sau.";
 }
 
-const summaryFallback = (title: string, excerpt: string, content: string, sourceLabel: string, articleType?: string): SummaryBlock => {
-  const lead = pickSentences(excerpt || firstUsefulParagraph(content), 2, 340);
-  const explainBase = pickSentences(firstUsefulParagraph(content), 2, 300);
-  const isOpinion = articleType === "opinion_translation" || sourceLabel.toLowerCase().includes("nghiên cứu") || sourceLabel.toLowerCase().includes("nghien");
-  const theme = detectTheme(title, excerpt, content);
+function inferWhatItReallySays(title: string, content: string, sourceLabel: string) {
+  const text = `${title} ${content}`.toLowerCase();
+  const isOpinion = sourceLabel.toLowerCase().includes("nghiên cứu") || sourceLabel.toLowerCase().includes("nghien");
+
+  if (isOpinion) {
+    return "Bài này nên được đọc như một lập luận chiến lược: tác giả không chỉ kể lại sự kiện mà đang cố định hình cách người đọc hiểu cán cân lực lượng, động cơ của các bên và hướng đi có thể xảy ra tiếp theo.";
+  }
+
+  if (/(ra mắt|giới thiệu|công bố sản phẩm|công nghệ)/i.test(text)) {
+    return "Điều bài muốn nhấn mạnh không chỉ là việc có một sản phẩm hay công nghệ mới, mà là tín hiệu về cạnh tranh, nhu cầu thị trường và cách doanh nghiệp định vị trong giai đoạn tới.";
+  }
+  if (/(thuế|quy định|chính sách|nghị định|luật)/i.test(text)) {
+    return "Thực chất bài đang nói rằng thay đổi chính sách hoặc khung pháp lý mới có thể tạo ra bên thắng bên thua rõ hơn trong hoạt động kinh doanh và đầu tư.";
+  }
+
+  return "Bài không chỉ báo tin; điều nó thực sự nói tới là lớp tác động thực tế phía sau sự kiện, như chi phí, dòng tiền, tâm lý thị trường hoặc thay đổi trong quyết định điều hành.";
+}
+
+function buildFallbackSummary(title: string, excerpt: string, content: string, sourceLabel: string): SummaryBlock {
+  const short = excerptOrFirstSentences(excerpt, content, 2);
+  const isOpinion = sourceLabel.toLowerCase().includes("nghiên cứu") || sourceLabel.toLowerCase().includes("nghien");
 
   return {
-    summaryShort: lead || `Bài "${title}" xoay quanh ${theme}, nhưng hệ thống hiện mới tạo được bản tóm tắt dự phòng thay vì bản phân tích đầy đủ bằng AI.`,
-    whatItReallySays: isOpinion
-      ? `Đây là bài bình luận/biên dịch. Luận điểm trung tâm mà tác giả muốn đẩy người đọc tới là cách nhìn về ${theme}, chứ không chỉ thuật lại sự kiện.`
-      : `Bài này không dừng ở việc báo tin. Điều đáng giữ lại là hệ quả thực tế của câu chuyện đối với ${theme}.`,
-    whyItMatters: `Điểm đáng chú ý không nằm ở headline mà ở chỗ bài buộc người đọc dịch câu chuyện sang ngôn ngữ tác động thực: ai bị ảnh hưởng, chi phí nào đổi, và quyết định nào có thể phải điều chỉnh.`,
-    easyExplanation: explainBase || `Nói ngắn gọn, bạn nên hiểu bài này như một nỗ lực giải thích ${theme} bằng ví dụ cụ thể, chứ không phải một mẩu tin rời rạc.`,
-    keyTakeaway: `Điểm nên giữ lại từ bài "${title}" là phải đọc lớp tác động thực tế phía sau câu chuyện về ${theme}.`,
+    summaryShort: short || `Bài "${title}" đã được thu thập, nhưng hệ thống đang dùng lớp tóm tắt dự phòng.`,
+    whatItReallySays: inferWhatItReallySays(title, content, sourceLabel),
+    whyItMatters: inferWhyItMatters(title, content, sourceLabel),
+    easyExplanation: isOpinion
+      ? `Nói ngắn gọn, bài này đang đưa ra một cách đọc về vấn đề chứ không chỉ đưa fact. Vì vậy điều cần chú ý là luận điểm trung tâm của tác giả và giả định nào đang đứng sau luận điểm đó.`
+      : `Nói ngắn gọn, bài này đáng đọc vì nó gợi ra tác động thực tế phía sau tiêu đề: ai chịu ảnh hưởng, chi phí có thể đổi ra sao, và thị trường hoặc doanh nghiệp phải phản ứng thế nào.`,
+    keyTakeaway: `Điểm nên giữ lại từ bài "${title}" là phải đọc lớp tác động thực tế hoặc lập luận trung tâm phía sau tiêu đề, thay vì dừng ở phần headline.`,
     cautionNote: isOpinion
-      ? "Với bài bình luận/biên dịch, cần tách phần fact được bài nêu ra khỏi phần suy luận của tác giả. Bản tóm tắt này vẫn là dự phòng nên chưa bóc tách đủ sâu."
-      : "Đây vẫn là bản tóm tắt dự phòng. Nó đủ để nắm ý chính, nhưng chưa phải lớp phân tích sâu cuối cùng để dùng như kết luận chắc chắn.",
-    conclusionText: `Hệ thống đã lấy được bài thật. Tuy nhiên phần tóm tắt này vẫn là fallback nên nên được coi là bản đọc nhanh, không phải bản phân tích hoàn chỉnh.`,
+      ? "Với bài bình luận hoặc biên dịch, cần tách phần fact được nêu ra khỏi phần suy luận của tác giả. Bản tóm tắt dự phòng này chỉ giúp giữ đúng hướng đọc, chưa thay thế được phân tích sâu."
+      : "Đây là bản tóm tắt dự phòng. Nó giữ được ý chính, nhưng chưa bóc tách hết các điểm cần dè chừng như độ bền của xu hướng, giới hạn dữ liệu hoặc hệ quả cấp hai.",
+    conclusionText: isOpinion
+      ? "Có thể đọc bài này để hiểu một cách nhìn chiến lược về vấn đề, nhưng không nên coi toàn bộ lập luận trong bài là fact đã được chứng minh hoàn toàn."
+      : "Bài này có giá trị khi dùng để nắm ý chính và định vị tác động thực tế, sau đó mới quyết định có cần đọc sâu toàn văn hay theo dõi thêm diễn biến tiếp theo hay không.",
     tableData: [],
     diagramHint: "none",
   };
-};
-
-function extractJson(text: string) {
-  const cleaned = text.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/```$/i, "").trim();
-  const start = cleaned.indexOf("{");
-  const end = cleaned.lastIndexOf("}");
-  if (start === -1 || end === -1 || end <= start) return null;
-  return cleaned.slice(start, end + 1);
 }
 
 function normalizeSummary(parsed: any): SummaryBlock | null {
@@ -171,13 +170,13 @@ function normalizeSummary(parsed: any): SummaryBlock | null {
   }
 
   return {
-    summaryShort: parsed.summaryShort.trim(),
-    whatItReallySays: parsed.whatItReallySays.trim(),
-    whyItMatters: parsed.whyItMatters.trim(),
-    easyExplanation: parsed.easyExplanation.trim(),
-    keyTakeaway: parsed.keyTakeaway.trim(),
-    cautionNote: parsed.cautionNote.trim(),
-    conclusionText: parsed.conclusionText.trim(),
+    summaryShort: normalizeSpaces(parsed.summaryShort),
+    whatItReallySays: normalizeSpaces(parsed.whatItReallySays),
+    whyItMatters: normalizeSpaces(parsed.whyItMatters),
+    easyExplanation: normalizeSpaces(parsed.easyExplanation),
+    keyTakeaway: normalizeSpaces(parsed.keyTakeaway),
+    cautionNote: normalizeSpaces(parsed.cautionNote),
+    conclusionText: normalizeSpaces(parsed.conclusionText),
     tableData: Array.isArray(parsed.tableData) ? parsed.tableData : [],
     diagramHint:
       parsed.diagramHint === "timeline" ||
@@ -186,6 +185,36 @@ function normalizeSummary(parsed: any): SummaryBlock | null {
         ? parsed.diagramHint
         : "none",
   };
+}
+
+function extractJsonObject(text: string) {
+  const trimmed = text.trim();
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    // continue
+  }
+
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced?.[1]) {
+    try {
+      return JSON.parse(fenced[1].trim());
+    } catch {
+      // continue
+    }
+  }
+
+  const start = trimmed.indexOf("{");
+  const end = trimmed.lastIndexOf("}");
+  if (start >= 0 && end > start) {
+    try {
+      return JSON.parse(trimmed.slice(start, end + 1));
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
 }
 
 function buildSummaryPrompt(params: {
@@ -199,38 +228,77 @@ function buildSummaryPrompt(params: {
   const isOpinion = articleType === "opinion_translation";
 
   return `
-Bạn là biên tập viên phân tích tin tức bằng tiếng Việt, viết cho một người đọc muốn hiểu bản chất chứ không chỉ đọc headline.
+Bạn là biên tập viên phân tích tin tức bằng tiếng Việt.
+Hãy trả về DUY NHẤT một object JSON hợp lệ, không thêm lời dẫn, không markdown, không code fence.
 
-Mục tiêu: tạo output đủ chiều sâu để hiển thị trên dashboard đọc tin cá nhân. Phải viết thật, có nội dung, không dùng câu vô thưởng vô phạt.
-
-Quy tắc chung:
-- Viết rõ, trực diện, không sáo rỗng.
-- Không chép lại tiêu đề theo kiểu báo chí.
+Yêu cầu nội dung:
+- Viết rõ, có nội dung thật, không dùng các câu chung chung như “bài này không chỉ...” nếu không có dữ kiện đi kèm.
 - Không bịa dữ kiện ngoài bài.
-- Nếu bài không đủ dữ liệu để kết luận mạnh, phải nói rõ giới hạn đó.
-- Từng trường phải có giá trị thực, không được viết kiểu placeholder.
-- summaryShort: 2-4 câu, bám sát dữ kiện thật có trong bài, không mở đầu bằng "Nguồn:".
-- whatItReallySays: bóc rõ bài thực chất đang muốn người đọc hiểu điều gì.
-- whyItMatters: giải thích vì sao việc này đáng quan tâm với góc nhìn doanh nghiệp / chính sách / thị trường / logistics / dòng tiền nếu có.
-- easyExplanation: giải thích như đang nói với người đọc thông minh nhưng không muốn đọc jargon.
-- keyTakeaway: chốt điều quan trọng nhất cần giữ lại.
-- cautionNote: nêu điểm cần dè chừng hoặc giới hạn khi đọc.
-- conclusionText: đoạn kết ngắn nhưng có trọng lượng.
-- Nếu trong bài có số liệu, mốc thời gian, tỷ lệ, quy mô, hãy cố gắng đưa 2-5 dòng vào tableData.
+- summaryShort: 2-4 câu, nêu sự kiện chính và ý nghĩa gần nhất.
+- whatItReallySays: bóc ra luận điểm hoặc tác động cốt lõi của bài.
+- whyItMatters: giải thích vì sao đáng theo dõi với góc nhìn thị trường / doanh nghiệp / chính sách / địa chính trị.
+- easyExplanation: diễn giải ngắn, dễ hiểu, nhưng không được vô thưởng vô phạt.
+- keyTakeaway: 1 câu chốt mạnh.
+- cautionNote: nêu giới hạn, giả định, hoặc điều phải dè chừng khi đọc.
+- conclusionText: 1-2 câu kết chắc tay.
+- tableData: chỉ dùng khi bài có số liệu hoặc mốc rõ.
+- diagramHint chỉ được là: timeline, cause-effect, compare, none.
 
 Nguồn: ${sourceLabel}
 Loại bài: ${articleType}
 
-Cách đọc riêng cho bài này:
+Hướng đọc riêng:
 ${isOpinion
-  ? "- Đây là bài bình luận/biên dịch, không phải bản tin trung lập.\n- whatItReallySays phải nêu được luận điểm trung tâm của tác giả.\n- cautionNote phải nói rõ chỗ nào là giả định hoặc thiên hướng lập luận.\n- easyExplanation nên diễn đạt kiểu: nói dễ hiểu thì tác giả đang bảo rằng..."
-  : "- Đây là bài tin/phân tích thực tế.\n- whatItReallySays phải nêu rõ bài đang cảnh báo, nhấn mạnh hoặc định hướng người đọc theo kết luận nào.\n- whyItMatters nên bám vào tác động thực.\n- easyExplanation phải thực dụng, tránh vĩ mô chung chung."}
+  ? "- Đây là bài bình luận hoặc biên dịch. Cần nêu rõ lập luận trung tâm của tác giả và đâu là phần người đọc nên dè chừng."
+  : "- Đây là bài tin hoặc phân tích thực tế. Cần bám vào tác động vận hành, thị trường, chính sách hoặc cạnh tranh."}
 
 Tiêu đề: ${title}
 Excerpt: ${excerpt}
 Nội dung bài:
-${content.slice(0, 15000)}
+${content.slice(0, 14000)}
 `;
+}
+
+async function tryStructuredSummary(client: OpenAI, prompt: string) {
+  const response = await withRetry(() =>
+    client.responses.create({
+      model: process.env.OPENAI_SUMMARY_MODEL || "gpt-4.1-mini",
+      input: [
+        {
+          role: "system",
+          content: "Bạn là biên tập viên phân tích tin tức bằng tiếng Việt. Trả về dữ liệu đúng schema JSON.",
+        },
+        {
+          role: "user",
+          content: prompt,
+        },
+      ],
+      store: false,
+      text: {
+        format: {
+          type: "json_schema",
+          name: "news_summary",
+          schema: SUMMARY_SCHEMA,
+          strict: true,
+        },
+      },
+    })
+  );
+
+  return normalizeSummary(extractJsonObject(response.output_text));
+}
+
+async function tryPlainJsonSummary(client: OpenAI, prompt: string) {
+  const response = await withRetry(() =>
+    client.responses.create({
+      model: process.env.OPENAI_SUMMARY_MODEL || "gpt-4.1-mini",
+      input: `${prompt}\n\nHãy chỉ trả về JSON object đúng các field yêu cầu.`,
+      store: false,
+      text: { verbosity: "medium" },
+    })
+  );
+
+  return normalizeSummary(extractJsonObject(response.output_text));
 }
 
 export async function generateSummary(params: {
@@ -240,49 +308,31 @@ export async function generateSummary(params: {
   sourceLabel: string;
   articleType: string;
 }): Promise<SummaryBlock> {
-  const { title, excerpt, content, sourceLabel, articleType } = params;
+  const { title, excerpt, content, sourceLabel } = params;
   const apiKey = process.env.OPENAI_API_KEY;
 
   if (!apiKey) {
-    return summaryFallback(title, excerpt, content, sourceLabel, articleType);
+    return buildFallbackSummary(title, excerpt, content, sourceLabel);
   }
 
   const client = new OpenAI({ apiKey });
   const prompt = buildSummaryPrompt(params);
 
   try {
-    const response = await withRetry(() =>
-      client.responses.create({
-        model: process.env.OPENAI_SUMMARY_MODEL || "gpt-4o-mini",
-        input: [
-          {
-            role: "system",
-            content: "Bạn là biên tập viên phân tích tin tức bằng tiếng Việt. Trả về dữ liệu có cấu trúc đúng schema.",
-          },
-          {
-            role: "user",
-            content: prompt,
-          },
-        ],
-        store: false,
-        text: {
-          format: {
-            type: "json_schema",
-            name: "news_summary",
-            schema: SUMMARY_SCHEMA,
-            strict: true,
-          },
-          verbosity: "medium",
-        },
-      })
-    );
-
-    const raw = extractJson(response.output_text || "");
-    const parsed = raw ? normalizeSummary(JSON.parse(raw)) : null;
-    return parsed ?? summaryFallback(title, excerpt, content, sourceLabel, articleType);
+    const structured = await tryStructuredSummary(client, prompt);
+    if (structured) return structured;
   } catch {
-    return summaryFallback(title, excerpt, content, sourceLabel, articleType);
+    // continue to plain-json fallback
   }
+
+  try {
+    const plainJson = await tryPlainJsonSummary(client, prompt);
+    if (plainJson) return plainJson;
+  } catch {
+    // continue to local fallback
+  }
+
+  return buildFallbackSummary(title, excerpt, content, sourceLabel);
 }
 
 export async function answerAboutArticle(params: {
@@ -302,7 +352,7 @@ export async function answerAboutArticle(params: {
 
   const prompt = `
 Bạn là trợ lý giải thích tin tức bằng tiếng Việt.
-Nhiệm vụ: chỉ trả lời dựa trên bài đang mở và phần tóm tắt đã có sẵn. Không bịa nguồn khác. Không đi lan man.
+Chỉ trả lời dựa trên bài đang mở và phần tóm tắt có sẵn. Không bịa nguồn khác.
 
 Tiêu đề: ${title}
 
@@ -320,17 +370,13 @@ ${content.slice(0, 12000)}
 Câu hỏi của người dùng:
 ${question}
 
-Hãy trả lời:
-- Rõ ràng
-- Dễ hiểu
-- Có good will
-- Nếu câu hỏi vượt ngoài dữ liệu của bài, nói rõ là bài hiện tại không đủ để khẳng định.
+Hãy trả lời rõ ràng, ngắn gọn, có cấu trúc tự nhiên. Nếu bài hiện tại không đủ dữ liệu để khẳng định, phải nói rõ điều đó.
 `;
 
   try {
     const response = await withRetry(() =>
       client.responses.create({
-        model: process.env.OPENAI_CHAT_MODEL || "gpt-4o-mini",
+        model: process.env.OPENAI_CHAT_MODEL || "gpt-4.1-mini",
         input: prompt,
         store: false,
         text: { verbosity: "medium" },
