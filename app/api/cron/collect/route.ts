@@ -12,17 +12,26 @@ function authorized(request: Request) {
 
 async function collectSource(source: SourceKey) {
   const links = await discoverArticleLinks(source);
-  const results: Array<{ url: string; stored: string }> = [];
+  const results: Array<{ url: string; stored: string; error?: string }> = [];
 
-  for (const url of links.slice(0, 10)) {
-    const article = await parseArticle(url, source);
-    if (!article || !article.keepArticle) continue;
+  for (const url of links.slice(0, 2)) {
+    try {
+      const article = await parseArticle(url, source);
+      if (!article || !article.keepArticle) continue;
 
-    const saved = await storeArticle(article);
-    results.push({
-      url,
-      stored: saved.mode,
-    });
+      const saved = await storeArticle(article);
+      results.push({
+        url,
+        stored: saved.mode,
+      });
+    } catch (error) {
+      results.push({
+        url,
+        stored: "error",
+        error: error instanceof Error ? error.message : "Unknown error",
+      });
+      continue;
+    }
   }
 
   return results;
