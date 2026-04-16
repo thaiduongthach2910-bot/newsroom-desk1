@@ -14,7 +14,7 @@ async function collectSource(source: SourceKey) {
   const links = await discoverArticleLinks(source);
   const results: Array<{ url: string; stored: string }> = [];
 
-  for (const url of links.slice(0, 8)) {
+  for (const url of links.slice(0, 10)) {
     const article = await parseArticle(url, source);
     if (!article || !article.keepArticle) continue;
 
@@ -28,7 +28,7 @@ async function collectSource(source: SourceKey) {
   return results;
 }
 
-export async function GET(request: Request) {
+async function runCollect(request: Request) {
   if (!authorized(request)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
@@ -57,4 +57,12 @@ export async function GET(request: Request) {
       { status: 500 }
     );
   }
+}
+
+export async function GET(request: Request) {
+  return runCollect(request);
+}
+
+export async function POST(request: Request) {
+  return runCollect(request);
 }
