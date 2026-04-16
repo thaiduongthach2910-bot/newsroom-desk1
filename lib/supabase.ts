@@ -15,6 +15,16 @@ function mapSource(name: string | null | undefined): SourceKey {
   return name.toLowerCase().includes("nghien") ? "nghiencuuquocte" : "vneconomy";
 }
 
+function normalizeTitleKey(text: string) {
+  return text
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function normalizeSummary(summaryRow: any) {
   const row = Array.isArray(summaryRow) ? summaryRow[0] : summaryRow;
   return {
@@ -159,7 +169,28 @@ async function findExistingArticleId(
     .eq("published_at", params.publishedAt)
     .maybeSingle();
   const sameTitleAndTimeData = sameTitleAndTime.data as { id?: string } | null;
-  return sameTitleAndTimeData?.id;
+  if (sameTitleAndTimeData?.id) return sameTitleAndTimeData.id;
+
+  const recentCandidates = await supabase
+    .from("articles")
+    .select("id,title,published_at")
+    .eq("source_id", params.sourceId)
+    .gte("published_at", new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString())
+    .order("published_at", { ascending: false })
+    .limit(20);
+
+  const candidates = (recentCandidates.data as Array<{ id: string; title: string; published_at: string }> | null) ?? [];
+  const targetKey = normalizeTitleKey(params.title);
+  const targetDay = params.publishedAt.slice(0, 10);
+
+  for (const row of candidates) {
+    if (!row.title) continue;
+    if (normalizeTitleKey(row.title) === targetKey && row.published_at?.slice(0, 10) === targetDay) {
+      return row.id;
+    }
+  }
+
+  return undefined;
 }
 
 export async function storeArticle(article: ArticleRecord) {
@@ -208,31 +239,28 @@ export async function storeArticle(article: ArticleRecord) {
 
     if (updateError) throw updateError;
   } else {
-    const { data: upsertedArticle, error: articleError } = await supabase
+    const { data: insertedArticle, error: articleError } = await supabase
       .from("articles")
-      .upsert(
-        {
-          source_id: sourceId,
-          url: article.url,
-          title: article.title,
-          published_at: article.publishedAt,
-          raw_text: article.content,
-          clean_text: article.content,
-          author_name: null,
-          article_type: article.articleType,
-          is_promotional: article.isPromotional,
-          keep_article: article.keepArticle,
-          importance_score: article.importanceScore,
-          importance_level: article.importanceLevel,
-          status: "summarized",
-        },
-        { onConflict: "url" }
-      )
+      .insert({
+        source_id: sourceId,
+        url: article.url,
+        title: article.title,
+        published_at: article.publishedAt,
+        raw_text: article.content,
+        clean_text: article.content,
+        author_name: null,
+        article_type: article.articleType,
+        is_promotional: article.isPromotional,
+        keep_article: article.keepArticle,
+        importance_score: article.importanceScore,
+        importance_level: article.importanceLevel,
+        status: "summarized",
+      })
       .select("id")
       .single();
 
     if (articleError) throw articleError;
-    articleId = (upsertedArticle as { id: string }).id;
+    articleId = (insertedArticle as { id: string }).id;
   }
 
   const { error: summaryError } = await supabase.from("article_summaries").upsert(
@@ -255,47 +283,27 @@ export async function storeArticle(article: ArticleRecord) {
 
   if (summaryError) throw summaryError;
 
-  return { mode: "stored" as const, articleId };
+  return { mode: existingId ? ("updated" as const) : ("stored" as const), articleId };
 }
 
 export async function storeDigest(digest: DailyDigest) {
   const supabase = getSupabaseClient();
   if (!supabase) return { mode: "preview" as const };
 
-  const { data: digestRow, error: digestError } = await supabase
-    .from("daily_digests")
-    .upsert(
-      {
-        digest_date: digest.date,
-        title: digest.title,
-        intro_text: digest.intro,
-        digest_json: { articleSlugs: digest.articleSlugs, items: digest.items || [] },
+  const { error } = await supabase.from("daily_digests").upsert(
+    {
+      digest_date: digest.date,
+      title: digest.title,
+      intro_text: digest.intro,
+      digest_json: {
+        articleSlugs: digest.articleSlugs,
+        items: digest.items ?? [],
       },
-      { onConflict: "digest_date" }
-    )
-    .select("id")
-    .single();
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: "digest_date" }
+  );
 
-  if (digestError) throw digestError;
-
-  const digestId = (digestRow as { id: string }).id;
-
-  const articles = await getArticles();
-  const bySlug = new Map(articles.map((article) => [article.slug, article.id]));
-
-  for (const [index, slug] of digest.articleSlugs.entries()) {
-    const articleId = bySlug.get(slug);
-    if (!articleId) continue;
-
-    await supabase.from("digest_articles").upsert(
-      {
-        digest_id: digestId,
-        article_id: articleId,
-        rank_order: index + 1,
-      },
-      { onConflict: "digest_id,article_id" }
-    );
-  }
-
-  return { mode: "stored" as const, digestId };
+  if (error) throw error;
+  return { mode: "stored" as const };
 }

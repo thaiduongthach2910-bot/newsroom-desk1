@@ -1,21 +1,18 @@
 import OpenAI from "openai";
 import { SummaryBlock } from "@/lib/types";
 
-
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function isRateLimitError(error: unknown) {
   if (!error || typeof error !== "object") return false;
-
   const e = error as { status?: number; code?: string };
   return e.status === 429 || e.code === "rate_limit_exceeded";
 }
 
 async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
   let attempt = 0;
-
   while (true) {
     try {
       return await fn();
@@ -23,7 +20,6 @@ async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
       if (!isRateLimitError(error) || attempt >= maxRetries) {
         throw error;
       }
-
       const delay = 1500 * Math.pow(2, attempt);
       await sleep(delay);
       attempt += 1;
@@ -72,26 +68,46 @@ const SUMMARY_SCHEMA = {
   ],
 } as const;
 
-const summaryFallback = (title: string, excerpt: string, content: string, sourceLabel: string): SummaryBlock => {
-  const short = excerpt || content.slice(0, 320);
+function firstMeaningfulParagraphs(content: string, max = 2) {
+  return content
+    .split(/\n\n+/)
+    .map((item) => item.trim())
+    .filter((item) => item.length > 80)
+    .slice(0, max);
+}
+
+function shortExcerpt(title: string, excerpt: string, content: string) {
+  if (excerpt?.trim()) return excerpt.trim();
+  const para = firstMeaningfulParagraphs(content, 1)[0];
+  return para || title;
+}
+
+function summaryFallback(title: string, excerpt: string, content: string, sourceLabel: string): SummaryBlock {
   const isOpinion = sourceLabel.toLowerCase().includes("nghiên cứu") || sourceLabel.toLowerCase().includes("nghien");
+  const preview = shortExcerpt(title, excerpt, content);
+  const paragraphs = firstMeaningfulParagraphs(content, 2);
+  const second = paragraphs[1] || paragraphs[0] || preview;
 
   return {
-    summaryShort: short,
+    summaryShort: preview,
     whatItReallySays: isOpinion
-      ? "Bài này thuộc nhóm bình luận/biên dịch nên cần đọc như một lập luận chiến lược: tác giả đang cố thuyết phục người đọc nhìn sự kiện theo một kết luận nhất định, chứ không chỉ tường thuật diễn biến."
-      : "Bài này không chỉ báo tin mà đang cố hướng người đọc tới một kết luận thực dụng hơn: đằng sau sự kiện là hệ quả về hợp đồng, dòng tiền, chi phí và quyết định vận hành.",
-    whyItMatters: "Giá trị của bài không nằm ở phần headline mà ở việc nó buộc người đọc đổi cách nhìn vấn đề: từ đọc tin đơn thuần sang đọc tác động thật lên doanh nghiệp, thị trường hoặc chính sách.",
-    easyExplanation: "Nói dễ hiểu, đây là bản dự phòng khi lớp phân tích AI chưa đổ đủ nội dung. Nó cho bạn đại ý đúng hướng, nhưng chưa đạt độ sâu cuối cùng mà dashboard này nhắm tới.",
-    keyTakeaway: `Điểm nên giữ lại từ bài "${title}" là phải đọc lớp tác động thực tế phía sau, không dừng ở phần tin bề mặt.`,
+      ? `Bài này nên được đọc như một lập luận. Tác giả không chỉ kể lại sự kiện mà đang cố dẫn người đọc tới một kết luận chiến lược cụ thể. Cốt lõi của bài nằm ở cách tác giả nối các dữ kiện để bảo vệ lập luận đó.`
+      : `Bài này không chỉ báo tin mà đang muốn người đọc hiểu hệ quả thực tế phía sau sự kiện. Điểm quan trọng không nằm ở headline, mà ở tác động lên doanh nghiệp, thị trường, hợp đồng hoặc dòng tiền.` ,
+    whyItMatters: second,
+    easyExplanation: isOpinion
+      ? "Nói dễ hiểu, đây là bài kiểu 'tác giả đang muốn bạn nhìn vấn đề theo cách nào'. Vì vậy cần tách phần fact mà bài nêu ra khỏi phần suy luận của tác giả."
+      : "Nói dễ hiểu, đây là bài cần đọc theo hướng tác động thực tế: sau sự kiện sẽ ảnh hưởng gì đến quyết định kinh doanh, chi phí, thời gian giao hàng, hay kỳ vọng thị trường.",
+    keyTakeaway: `Điểm nên giữ lại từ bài \"${title}\" là phải đọc phần tác động thật phía sau, không dừng ở lớp thông tin bề mặt.`,
     cautionNote: isOpinion
-      ? "Với bài bình luận/biên dịch, luôn tách giữa fact được bài nêu ra và phần suy luận của tác giả. Bản fallback này chưa làm việc đó đủ sâu."
-      : "Bản fallback này chưa bóc tách hết lớp hệ quả pháp lý, vận hành hay dòng tiền. Vì vậy nó chỉ nên được xem là điểm khởi đầu để đọc tiếp, không phải bản phân tích cuối.",
-    conclusionText: "Hệ thống đã lấy được bài thật, nhưng phần này vẫn là fallback. Cần để lớp structured output chạy ổn định để nội dung đạt đúng tiêu chuẩn bạn muốn.",
+      ? "Với bài bình luận/biên dịch, luôn dè chừng chỗ nào là suy luận và chỗ nào là dữ kiện được chứng minh trực tiếp trong bài."
+      : "Bản tóm tắt fallback này chỉ là lớp tạm. Nó chưa bóc hết chiều sâu pháp lý, vận hành hoặc dòng tiền nếu bài gốc có những lớp đó.",
+    conclusionText: isOpinion
+      ? "Hãy đọc bài này như một lập luận cần phản biện, không phải như một bản tin trung lập tuyệt đối."
+      : "Hãy đọc bài này theo hướng quản trị tác động thực tế, không chỉ như một bản tin sự kiện.",
     tableData: [],
     diagramHint: "none",
   };
-};
+}
 
 function normalizeSummary(parsed: any): SummaryBlock | null {
   if (!parsed || typeof parsed !== "object") return null;
@@ -128,6 +144,23 @@ function normalizeSummary(parsed: any): SummaryBlock | null {
   };
 }
 
+function extractJsonObject(text: string) {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    const match = trimmed.match(/\{[\s\S]*\}/);
+    if (!match) return null;
+    try {
+      return JSON.parse(match[0]);
+    } catch {
+      return null;
+    }
+  }
+}
+
 function buildSummaryPrompt(params: {
   title: string;
   excerpt: string;
@@ -139,37 +172,36 @@ function buildSummaryPrompt(params: {
   const isOpinion = articleType === "opinion_translation";
 
   return `
-Bạn là biên tập viên phân tích tin tức bằng tiếng Việt, viết cho một người đọc muốn hiểu bản chất chứ không chỉ đọc headline.
-
-Mục tiêu: tạo output đủ chiều sâu để hiển thị trên dashboard đọc tin cá nhân. Phải viết thật, có nội dung, không dùng câu vô thưởng vô phạt.
+Bạn là biên tập viên phân tích tin tức bằng tiếng Việt. Hãy viết giàu nội dung, không rỗng, không nhắc đi nhắc lại headline.
 
 Quy tắc chung:
-- Viết rõ, trực diện, không sáo rỗng.
-- Không chép lại tiêu đề theo kiểu báo chí.
 - Không bịa dữ kiện ngoài bài.
-- Nếu bài không đủ dữ liệu để kết luận mạnh, phải nói rõ giới hạn đó.
-- Từng trường phải có giá trị thực, không được viết kiểu placeholder.
-- summaryShort: 3-5 câu, nêu được sự kiện chính và tác động chính.
-- whatItReallySays: bóc rõ bài thực chất đang muốn người đọc hiểu điều gì.
-- whyItMatters: giải thích vì sao việc này đáng quan tâm với góc nhìn doanh nghiệp / chính sách / thị trường / logistics / dòng tiền nếu có.
-- easyExplanation: giải thích như đang nói với người đọc thông minh nhưng không muốn đọc jargon.
-- keyTakeaway: chốt điều quan trọng nhất cần giữ lại.
-- cautionNote: nêu điểm cần dè chừng hoặc giới hạn khi đọc.
-- conclusionText: đoạn kết ngắn nhưng có trọng lượng.
-- Nếu trong bài có số liệu, mốc thời gian, tỷ lệ, quy mô, hãy cố gắng đưa 2-5 dòng vào tableData.
+- Viết như đang giải thích cho người đọc muốn hiểu bản chất.
+- Tránh những câu vô thưởng vô phạt kiểu “bài này rất quan trọng”.
+- Mỗi trường phải có nội dung riêng, không lặp nhau.
+- Nếu bài có số liệu hoặc mốc thời gian, cố gắng đưa vào tableData.
 
 Nguồn: ${sourceLabel}
 Loại bài: ${articleType}
 
-Cách đọc riêng cho bài này:
 ${isOpinion
-  ? "- Đây là bài bình luận/biên dịch, không phải bản tin trung lập.\n- whatItReallySays phải nêu được lập luận trung tâm của tác giả.\n- cautionNote phải nói rõ chỗ nào là giả định, thiên hướng lập luận, hoặc điểm chưa được chứng minh đủ trong phạm vi bài.\n- easyExplanation nên giải thích kiểu: nói dễ hiểu thì tác giả đang bảo rằng..."
-  : "- Đây là bài tin/phân tích thực tế.\n- whatItReallySays phải nêu rõ bài đang cảnh báo, nhấn mạnh hoặc định hướng người đọc theo kết luận nào.\n- whyItMatters nên bám vào tác động thực.\n- easyExplanation phải thực dụng, tránh vĩ mô chung chung."}
+  ? `Đây là bài bình luận/biên dịch. Hãy xử lý như sau:
+- summaryShort: tóm lập luận trung tâm và bối cảnh.
+- whatItReallySays: nói rõ tác giả đang muốn người đọc tin điều gì.
+- whyItMatters: giải thích vì sao lập luận này đáng chú ý về chiến lược/chính sách/địa chính trị.
+- easyExplanation: mở đầu tự nhiên kiểu “Nói dễ hiểu thì tác giả đang bảo rằng...”.
+- cautionNote: phải chỉ ra giới hạn của bài, chỗ thiên về lập luận hoặc chỗ cần đọc dè chừng.`
+  : `Đây là bài tin/phân tích thực tế. Hãy xử lý như sau:
+- summaryShort: tóm sự kiện chính và tác động chính.
+- whatItReallySays: bóc ra bài thực chất đang cảnh báo/nhấn mạnh điều gì.
+- whyItMatters: bám vào tác động thực lên thị trường, doanh nghiệp, logistics, hợp đồng hoặc dòng tiền nếu có.
+- easyExplanation: giải thích thực dụng, tránh ngôn ngữ mơ hồ.
+- cautionNote: nêu điểm dễ hiểu sai hoặc giới hạn của bài.`}
 
 Tiêu đề: ${title}
 Excerpt: ${excerpt}
 Nội dung bài:
-${content.slice(0, 15000)}
+${content.slice(0, 14000)}
 `;
 }
 
@@ -193,32 +225,34 @@ export async function generateSummary(params: {
   try {
     const response = await withRetry(() =>
       client.responses.create({
-      model: process.env.OPENAI_SUMMARY_MODEL || "gpt-4o-mini",
-      input: [
-        {
-          role: "system",
-          content: "Bạn là biên tập viên phân tích tin tức bằng tiếng Việt. Trả về dữ liệu có cấu trúc đúng schema.",
+        model: process.env.OPENAI_SUMMARY_MODEL || "gpt-4o-mini",
+        input: [
+          {
+            role: "system",
+            content:
+              "Bạn là biên tập viên phân tích tin tức bằng tiếng Việt. Trả về dữ liệu có cấu trúc đúng schema và nội dung phải cụ thể, có chiều sâu.",
+          },
+          {
+            role: "user",
+            content: prompt,
+          },
+        ],
+        store: false,
+        text: {
+          format: {
+            type: "json_schema",
+            name: "news_summary",
+            schema: SUMMARY_SCHEMA,
+            strict: true,
+          },
+          verbosity: "medium",
         },
-        {
-          role: "user",
-          content: prompt,
-        },
-      ],
-      store: false,
-      text: {
-        format: {
-          type: "json_schema",
-          name: "news_summary",
-          schema: SUMMARY_SCHEMA,
-          strict: true,
-        },
-        verbosity: "medium",
-      },
       })
     );
 
-    const parsed = normalizeSummary(JSON.parse(response.output_text));
-    return parsed ?? summaryFallback(title, excerpt, content, sourceLabel);
+    const parsed = extractJsonObject(response.output_text);
+    const normalized = normalizeSummary(parsed);
+    return normalized ?? summaryFallback(title, excerpt, content, sourceLabel);
   } catch {
     return summaryFallback(title, excerpt, content, sourceLabel);
   }

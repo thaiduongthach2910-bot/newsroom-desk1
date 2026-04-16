@@ -3,7 +3,7 @@ import { detectArticleType, isPromotionalArticle, scoreImportance } from "@/lib/
 import { ArticleRecord, SourceKey } from "@/lib/types";
 import { generateSummary } from "@/lib/openai";
 
-const BAD_VNECONOMY_PREFIXES = [
+const BAD_VNECONOMY_EXACT_SLUGS = new Set([
   "podcast",
   "chung-khoan",
   "dien-dan",
@@ -27,7 +27,7 @@ const BAD_VNECONOMY_PREFIXES = [
   "thi-truong",
   "phap-ly",
   "khung-phap-ly",
-];
+]);
 
 const BAD_VNECONOMY_TITLE_PATTERNS = [
   /^thị trường vốn/i,
@@ -42,7 +42,7 @@ const BAD_VNECONOMY_TITLE_PATTERNS = [
   /^doanh nghiệp niêm yết/i,
   /^podcast/i,
   /^infographics/i,
-  /^thị trường/i,
+  /^thị trường$/i,
 ];
 
 const BAD_TEXT_SNIPPETS = [
@@ -52,6 +52,9 @@ const BAD_TEXT_SNIPPETS = [
   "Đăng nhập để bình luận",
   "Bạn đọc có thể gửi",
   "Bản quyền thuộc về Tạp chí Kinh tế Việt Nam",
+  "Có thể bạn quan tâm",
+  "Tin liên quan",
+  "Xem thêm",
 ];
 
 function slugFromUrl(url: string) {
@@ -68,22 +71,31 @@ function cleanTitle(title: string, source: SourceKey) {
   return trimmed;
 }
 
+function stripNoise(text: string) {
+  return text.replace(/\s+/g, " ").trim();
+}
+
 function extractParagraphs($: cheerio.CheerioAPI, source: SourceKey) {
   const selectors =
     source === "vneconomy"
       ? [
-          "article p",
           ".detail__content p",
           ".detail-content p",
           ".article__body p",
           ".article-content p",
-          "main article p",
+          "main article .content-detail p",
         ]
-      : ["article p", ".entry-content p", ".post-content p", ".td-post-content p", "main article p", "main p"];
+      : [
+          ".entry-content p",
+          ".post-content p",
+          ".td-post-content p",
+          "main article p",
+          "article p",
+        ];
 
   for (const selector of selectors) {
     const texts = $(selector)
-      .map((_, el) => $(el).text().replace(/\s+/g, " ").trim())
+      .map((_, el) => stripNoise($(el).text()))
       .get()
       .filter(Boolean)
       .filter((text) => text.length > 60)
@@ -92,8 +104,10 @@ function extractParagraphs($: cheerio.CheerioAPI, source: SourceKey) {
     if (texts.length >= 5) return texts;
   }
 
+  if (source === "vneconomy") return [];
+
   return $("p")
-    .map((_, el) => $(el).text().replace(/\s+/g, " ").trim())
+    .map((_, el) => stripNoise($(el).text()))
     .get()
     .filter((text) => text.length > 80)
     .filter((text) => !BAD_TEXT_SNIPPETS.some((snippet) => text.includes(snippet)))
@@ -163,7 +177,13 @@ function isRecentEnough(source: SourceKey, publishedAt: string) {
   if (source !== "nghiencuuquocte") return true;
   const date = new Date(publishedAt);
   const diffDays = (Date.now() - date.getTime()) / (1000 * 60 * 60 * 24);
-  return diffDays >= 0 && diffDays <= 4;
+  return diffDays >= 0 && diffDays <= 5;
+}
+
+function hasDedicatedVnEconomyBody($: cheerio.CheerioAPI) {
+  return [".detail__content", ".detail-content", ".article__body", ".article-content"].some(
+    (selector) => $(selector).length > 0
+  );
 }
 
 function shouldRejectPage(params: {
@@ -172,22 +192,28 @@ function shouldRejectPage(params: {
   excerpt: string;
   content: string;
   source: SourceKey;
+  hasPublishedMeta: boolean;
+  hasDedicatedBody: boolean;
 }) {
-  const { url, title, content, source } = params;
+  const { url, title, content, source, hasPublishedMeta, hasDedicatedBody } = params;
   const slug = slugFromUrl(url);
   const paragraphCount = content.split(/\n\n+/).filter(Boolean).length;
+  const hyphenCount = (slug.match(/-/g) || []).length;
 
   if (!title || title.length < 20) return true;
-  if (!content || content.length < 600) return true;
-  if (paragraphCount < 4) return true;
+  if (!content || content.length < 700) return true;
+  if (paragraphCount < 5) return true;
 
   if (source === "vneconomy") {
-    if (BAD_VNECONOMY_PREFIXES.some((prefix) => slug === prefix || slug.startsWith(prefix + "-"))) return true;
+    if (BAD_VNECONOMY_EXACT_SLUGS.has(slug)) return true;
     if (BAD_VNECONOMY_TITLE_PATTERNS.some((pattern) => pattern.test(title))) return true;
+    if (slug.length < 34 || hyphenCount < 6) return true;
+    if (!hasDedicatedBody) return true;
+    if (!hasPublishedMeta) return true;
   }
 
   if (source === "nghiencuuquocte") {
-    if (!/\/\d{4}\/\d{2}\/\d{2}\//.test(url)) return true;
+    if (!/\/(\d{4})\/(\d{2})\/(\d{2})\//.test(url)) return true;
     if (/thế giới hôm nay/i.test(title)) return true;
   }
 
@@ -197,11 +223,13 @@ function shouldRejectPage(params: {
 export async function parseArticle(url: string, source: SourceKey): Promise<ArticleRecord | null> {
   const sourceLabel = source === "vneconomy" ? "VnEconomy" : "Nghiên cứu Quốc tế";
 
-  const html = await fetch(url, {
-    headers: { "user-agent": "news-dashboard-final/1.0" },
+  const res = await fetch(url, {
+    headers: { "user-agent": "newsroom-desk/1.0" },
     next: { revalidate: 1800 },
-  }).then((res) => res.text());
+  });
 
+  if (!res.ok) return null;
+  const html = await res.text();
   const $ = cheerio.load(html);
 
   const title = cleanTitle(extractTitle($), source);
@@ -209,8 +237,10 @@ export async function parseArticle(url: string, source: SourceKey): Promise<Arti
   const content = extractText($, source);
   const imageUrl = extractImage($, url);
   const publishedAt = extractPublishedAt($, url, source);
+  const hasPublishedMeta = Boolean(extractPublishedAtRaw($));
+  const hasDedicatedBody = source === "vneconomy" ? hasDedicatedVnEconomyBody($) : true;
 
-  if (shouldRejectPage({ url, title, excerpt, content, source })) {
+  if (shouldRejectPage({ url, title, excerpt, content, source, hasPublishedMeta, hasDedicatedBody })) {
     return null;
   }
 

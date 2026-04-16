@@ -6,7 +6,7 @@ const SOURCE_URLS: Record<SourceKey, string[]> = {
   nghiencuuquocte: ["https://nghiencuuquocte.org/"],
 };
 
-const BLOCKED_VNECONOMY_PREFIXES = [
+const BLOCKED_VNECONOMY_EXACT_SLUGS = new Set([
   "podcast",
   "chung-khoan",
   "dien-dan",
@@ -30,9 +30,9 @@ const BLOCKED_VNECONOMY_PREFIXES = [
   "thi-truong",
   "phap-ly",
   "khung-phap-ly",
-];
+]);
 
-const BLOCKED_ANCHOR_TEXT = [
+const BLOCKED_VNECONOMY_ANCHOR_TEXT = [
   "thị trường vốn",
   "diễn đàn",
   "diễn đàn kinh tế xanh",
@@ -48,6 +48,9 @@ const BLOCKED_ANCHOR_TEXT = [
   "e-magazine",
   "kinh tế xanh",
   "thương vụ anh",
+  "xem thêm",
+  "đọc tiếp",
+  "xem chi tiết",
 ];
 
 function normalizeUrl(href: string, base: string) {
@@ -71,7 +74,7 @@ function slugFromUrl(url: string) {
   }
 }
 
-function isFreshDateFromUrl(url: string, maxDays = 4) {
+function isFreshDateFromUrl(url: string, maxDays = 5) {
   const match = url.match(/\/(\d{4})\/(\d{2})\/(\d{2})\//);
   if (!match) return false;
 
@@ -83,11 +86,15 @@ function isFreshDateFromUrl(url: string, maxDays = 4) {
   return diffDays >= 0 && diffDays <= maxDays;
 }
 
+function normalizeAnchorText(text: string) {
+  return text.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
 function isBlockedAnchorText(text: string) {
-  const cleaned = text.replace(/\s+/g, " ").trim().toLowerCase();
+  const cleaned = normalizeAnchorText(text);
   if (!cleaned) return true;
-  if (cleaned.length < 24) return true;
-  return BLOCKED_ANCHOR_TEXT.some((item) => cleaned === item || cleaned.startsWith(item + " "));
+  if (cleaned.length < 28) return true;
+  return BLOCKED_VNECONOMY_ANCHOR_TEXT.some((item) => cleaned === item || cleaned.startsWith(item + " "));
 }
 
 function isLikelyVnEconomyArticle(url: string, anchorText: string) {
@@ -97,31 +104,35 @@ function isLikelyVnEconomyArticle(url: string, anchorText: string) {
   const slug = slugFromUrl(url);
   const hyphenCount = (slug.match(/-/g) || []).length;
 
-  if (!slug || slug.length < 28 || hyphenCount < 5) return false;
-  if (BLOCKED_VNECONOMY_PREFIXES.some((prefix) => slug === prefix || slug.startsWith(prefix + "-"))) {
-    return false;
-  }
+  if (!slug) return false;
+  if (BLOCKED_VNECONOMY_EXACT_SLUGS.has(slug)) return false;
+  if (slug.length < 34 || hyphenCount < 6) return false;
+  if (/^(video|podcast|infographics?)-/i.test(slug)) return false;
   if (isBlockedAnchorText(anchorText)) return false;
 
   return true;
 }
 
-function isLikelyNghienCuuQuocTeArticle(url: string) {
+function isLikelyNghienCuuQuocTeArticle(url: string, anchorText: string) {
   if (!url.startsWith("https://nghiencuuquocte.org/")) return false;
-  if (!/\/\d{4}\/\d{2}\/\d{2}\//.test(url)) return false;
+  if (!/\/(\d{4})\/(\d{2})\/(\d{2})\//.test(url)) return false;
   if (/the-gioi-hom-nay/i.test(url)) return false;
-  return isFreshDateFromUrl(url, 4);
+
+  const cleaned = normalizeAnchorText(anchorText);
+  if (cleaned.length < 16) return false;
+
+  return isFreshDateFromUrl(url, 5);
 }
 
 function isLikelyArticleUrl(source: SourceKey, url: string, anchorText = "") {
   return source === "vneconomy"
     ? isLikelyVnEconomyArticle(url, anchorText)
-    : isLikelyNghienCuuQuocTeArticle(url);
+    : isLikelyNghienCuuQuocTeArticle(url, anchorText);
 }
 
 async function fetchText(url: string) {
   const res = await fetch(url, {
-    headers: { "user-agent": "news-dashboard-final/1.0" },
+    headers: { "user-agent": "newsroom-desk/1.0" },
     next: { revalidate: 1800 },
   });
 
@@ -162,5 +173,5 @@ export async function discoverArticleLinks(source: SourceKey): Promise<string[]>
     }
   }
 
-  return Array.from(collected).slice(0, 12);
+  return Array.from(collected).slice(0, 10);
 }
