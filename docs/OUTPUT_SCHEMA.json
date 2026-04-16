@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "news_article_summary",
+  "type": "object",
+  "required": [
+    "article_category",
+    "summary_short",
+    "what_it_really_says",
+    "easy_explanation",
+    "importance_level",
+    "is_opinion_like",
+    "conclusion_text"
+  ],
+  "properties": {
+    "article_category": {
+      "type": "string",
+      "enum": ["news_analysis", "opinion_translation"]
+    },
+    "summary_short": {
+      "type": "string"
+    },
+    "what_it_really_says": {
+      "type": "string"
+    },
+    "why_it_matters": {
+      "type": "string"
+    },
+    "easy_explanation": {
+      "type": "string"
+    },
+    "most_important_point": {
+      "type": "string"
+    },
+    "caution_note": {
+      "type": "string"
+    },
+    "conclusion_text": {
+      "type": "string"
+    },
+    "importance_level": {
+      "type": "string",
+      "enum": ["high", "medium", "low"]
+    },
+    "importance_score": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 12
+    },
+    "is_promotional": {
+      "type": "boolean"
+    },
+    "is_opinion_like": {
+      "type": "boolean"
+    },
+    "table_data": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": { "type": ["string", "number", "boolean", "null"] }
+      }
+    },
+    "diagram_hint": {
+      "type": "string",
+      "enum": ["none", "timeline", "compare", "cause_effect"]
+    }
+  },
+  "additionalProperties": false
+}
