@@ -3,26 +3,32 @@ import { detectArticleType, isPromotionalArticle, scoreImportance } from "@/lib/
 import { ArticleRecord, SourceKey } from "@/lib/types";
 import { generateSummary } from "@/lib/openai";
 
-const USER_AGENT = "newsroom-desk/1.0";
-const REQUEST_TIMEOUT_MS = 12000;
-
 const BAD_VNECONOMY_PREFIXES = [
   "tap-chi-kinh-te-viet-nam",
   "san-pham-thi-truong",
-  "thi-truong-von",
+  "podcast",
+  "chung-khoan",
   "dien-dan",
   "dien-dan-kinh-te-xanh",
+  "thi-truong-von",
+  "phap-ly-kinh-te-xanh",
+  "tai-chinh-ngan-hang",
+  "bao-hiem-tai-chinh",
   "bao-hiem",
   "ngan-hang",
   "tai-chinh",
-  "khung-phap-ly",
-  "phap-ly",
-  "kinh-te-xanh",
-  "tieu-dung",
-  "podcast",
-  "infographics",
-  "emagazine",
+  "doanh-nghiep-niem-yet",
   "e-magazine",
+  "emagazine",
+  "tieu-dung",
+  "thuong-vu-anh",
+  "infographics",
+  "kinh-te-xanh",
+  "data-talk",
+  "the-gioi-hom-nay",
+  "thi-truong",
+  "phap-ly",
+  "khung-phap-ly",
 ];
 
 const BAD_VNECONOMY_TITLE_PATTERNS = [
@@ -37,30 +43,27 @@ const BAD_VNECONOMY_TITLE_PATTERNS = [
   /^pháp lý/i,
   /^tiêu dùng/i,
   /^kinh tế xanh/i,
+  /^doanh nghiệp niêm yết/i,
   /^podcast/i,
   /^infographics/i,
-  /^thị trường$/i,
+  /^thị trường/i,
+];
+
+const BAD_NGHIENCUUQUOCTE_TITLE_PATTERNS = [
+  /^\d{1,2}\/\d{1,2}\/\d{4}/i,
+  /tự sát/i,
+  /hôm nay trong lịch sử/i,
+  /ngày này năm xưa/i,
 ];
 
 const BAD_TEXT_SNIPPETS = [
   "Với phương châm Đoàn kết - Dân chủ",
   "Tạp chí Kinh tế Việt Nam",
-  "Mời quý độc giả đón đọc ấn phẩm",
+  "Editorial illustration for the dashboard mockup",
   "Đăng nhập để bình luận",
   "Bạn đọc có thể gửi",
   "Bản quyền thuộc về Tạp chí Kinh tế Việt Nam",
 ];
-
-function fetchWithTimeout(url: string) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-
-  return fetch(url, {
-    headers: { "user-agent": USER_AGENT },
-    next: { revalidate: 1800 },
-    signal: controller.signal,
-  }).finally(() => clearTimeout(timer));
-}
 
 function slugFromUrl(url: string) {
   const pathname = new URL(url).pathname;
@@ -70,13 +73,23 @@ function slugFromUrl(url: string) {
 
 function cleanTitle(title: string, source: SourceKey) {
   const trimmed = title.replace(/\s+/g, " ").trim();
-  return source === "vneconomy" ? trimmed.replace(/\s*-\s*VnEconomy$/i, "").trim() : trimmed;
+  if (source === "vneconomy") {
+    return trimmed.replace(/\s*-\s*VnEconomy$/i, "").trim();
+  }
+  return trimmed;
 }
 
 function extractParagraphs($: cheerio.CheerioAPI, source: SourceKey) {
   const selectors =
     source === "vneconomy"
-      ? ["article p", ".detail__content p", ".detail-content p", ".article__body p", ".article-content p", "main article p"]
+      ? [
+          "article p",
+          ".detail__content p",
+          ".detail-content p",
+          ".article__body p",
+          ".article-content p",
+          "main article p",
+        ]
       : ["article p", ".entry-content p", ".post-content p", ".td-post-content p", "main article p", "main p"];
 
   for (const selector of selectors) {
@@ -87,7 +100,7 @@ function extractParagraphs($: cheerio.CheerioAPI, source: SourceKey) {
       .filter((text) => text.length > 60)
       .filter((text) => !BAD_TEXT_SNIPPETS.some((snippet) => text.includes(snippet)));
 
-    if (texts.length >= 4) return texts;
+    if (texts.length >= 5) return texts;
   }
 
   return $("p")
@@ -95,7 +108,7 @@ function extractParagraphs($: cheerio.CheerioAPI, source: SourceKey) {
     .get()
     .filter((text) => text.length > 80)
     .filter((text) => !BAD_TEXT_SNIPPETS.some((snippet) => text.includes(snippet)))
-    .slice(0, 10);
+    .slice(0, 12);
 }
 
 function extractText($: cheerio.CheerioAPI, source: SourceKey) {
@@ -107,7 +120,11 @@ function extractTitle($: cheerio.CheerioAPI) {
 }
 
 function extractExcerpt($: cheerio.CheerioAPI) {
-  return $("meta[property='og:description']").attr("content") || $("meta[name='description']").attr("content") || "";
+  return (
+    $("meta[property='og:description']").attr("content") ||
+    $("meta[name='description']").attr("content") ||
+    ""
+  );
 }
 
 function extractImage($: cheerio.CheerioAPI, url: string) {
@@ -118,7 +135,6 @@ function extractImage($: cheerio.CheerioAPI, url: string) {
     undefined;
 
   if (!raw) return undefined;
-
   try {
     return new URL(raw, url).toString();
   } catch {
@@ -161,15 +177,20 @@ function isRecentEnough(source: SourceKey, publishedAt: string) {
   return diffDays >= 0 && diffDays <= 4;
 }
 
-function shouldRejectPage(params: { url: string; title: string; content: string; source: SourceKey }) {
+function shouldRejectPage(params: {
+  url: string;
+  title: string;
+  excerpt: string;
+  content: string;
+  source: SourceKey;
+}) {
   const { url, title, content, source } = params;
   const slug = slugFromUrl(url);
   const paragraphCount = content.split(/\n\n+/).filter(Boolean).length;
 
-  if (!title || title.length < 18) return true;
-  if (!content || content.length < 500) return true;
+  if (!title || title.length < 20) return true;
+  if (!content || content.length < 600) return true;
   if (paragraphCount < 4) return true;
-  if (BAD_TEXT_SNIPPETS.some((snippet) => content.includes(snippet))) return true;
 
   if (source === "vneconomy") {
     if (BAD_VNECONOMY_PREFIXES.some((prefix) => slug === prefix || slug.startsWith(prefix + "-"))) return true;
@@ -179,21 +200,33 @@ function shouldRejectPage(params: { url: string; title: string; content: string;
   if (source === "nghiencuuquocte") {
     if (!/\/\d{4}\/\d{2}\/\d{2}\//.test(url)) return true;
     if (/thế giới hôm nay/i.test(title)) return true;
-    if (/^\d{1,2}\/\d{1,2}\/\d{4}/.test(title)) return true;
-    if (/vào ngày này năm/i.test(content)) return true;
-    if (/tự sát/i.test(title)) return true;
+    if (BAD_NGHIENCUUQUOCTE_TITLE_PATTERNS.some((pattern) => pattern.test(title))) return true;
   }
 
   return false;
 }
 
+async function fetchHtml(url: string, timeoutMs = 12000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const res = await fetch(url, {
+      headers: { "user-agent": "news-dashboard-final/1.0" },
+      next: { revalidate: 1800 },
+      signal: controller.signal,
+    });
+
+    if (!res.ok) throw new Error(`Fetch failed for ${url}: ${res.status}`);
+    return await res.text();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function parseArticle(url: string, source: SourceKey): Promise<ArticleRecord | null> {
   const sourceLabel = source === "vneconomy" ? "VnEconomy" : "Nghiên cứu Quốc tế";
-
-  const response = await fetchWithTimeout(url);
-  if (!response.ok) return null;
-  const html = await response.text();
-
+  const html = await fetchHtml(url);
   const $ = cheerio.load(html);
 
   const title = cleanTitle(extractTitle($), source);
@@ -202,8 +235,13 @@ export async function parseArticle(url: string, source: SourceKey): Promise<Arti
   const imageUrl = extractImage($, url);
   const publishedAt = extractPublishedAt($, url, source);
 
-  if (shouldRejectPage({ url, title, content, source })) return null;
-  if (!isRecentEnough(source, publishedAt)) return null;
+  if (shouldRejectPage({ url, title, excerpt, content, source })) {
+    return null;
+  }
+
+  if (!isRecentEnough(source, publishedAt)) {
+    return null;
+  }
 
   const articleType = detectArticleType(source, title, content);
   const promotional = isPromotionalArticle(title, excerpt, content);

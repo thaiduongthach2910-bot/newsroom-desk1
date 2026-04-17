@@ -4,26 +4,30 @@ import { parseArticle } from "@/lib/collectors/parse-article";
 import { storeArticle } from "@/lib/supabase";
 import { SourceKey } from "@/lib/types";
 
+export const maxDuration = 300;
+
 function authorized(request: Request) {
   const header = request.headers.get("x-cron-secret");
   const secret = process.env.CRON_SECRET;
   return !!secret && header === secret;
 }
 
+const MAX_LINKS_PER_SOURCE = 1;
+
 async function collectSource(source: SourceKey) {
   const links = await discoverArticleLinks(source);
   const results: Array<{ url: string; stored: string; error?: string }> = [];
 
-  for (const url of links.slice(0, 3)) {
+  for (const url of links.slice(0, MAX_LINKS_PER_SOURCE)) {
     try {
       const article = await parseArticle(url, source);
-      if (!article || !article.keepArticle) continue;
+      if (!article || !article.keepArticle) {
+        results.push({ url, stored: "skipped" });
+        continue;
+      }
 
       const saved = await storeArticle(article);
-      results.push({
-        url,
-        stored: saved.mode,
-      });
+      results.push({ url, stored: saved.mode });
     } catch (error) {
       results.push({
         url,
