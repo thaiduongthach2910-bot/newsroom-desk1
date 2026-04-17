@@ -3,74 +3,64 @@ import { detectArticleType, isPromotionalArticle, scoreImportance } from "@/lib/
 import { ArticleRecord, SourceKey } from "@/lib/types";
 import { generateSummary } from "@/lib/openai";
 
+const USER_AGENT = "newsroom-desk/1.0";
+const REQUEST_TIMEOUT_MS = 12000;
+
 const BAD_VNECONOMY_PREFIXES = [
-  "podcast",
-  "chung-khoan",
+  "tap-chi-kinh-te-viet-nam",
+  "san-pham-thi-truong",
+  "thi-truong-von",
   "dien-dan",
   "dien-dan-kinh-te-xanh",
-  "thi-truong-von",
-  "phap-ly-kinh-te-xanh",
-  "tai-chinh-ngan-hang",
-  "bao-hiem-tai-chinh",
   "bao-hiem",
   "ngan-hang",
   "tai-chinh",
-  "doanh-nghiep-niem-yet",
-  "e-magazine",
-  "emagazine",
-  "tieu-dung",
-  "thuong-vu-anh",
-  "infographics",
-  "kinh-te-xanh",
-  "data-talk",
-  "the-gioi-hom-nay",
-  "thi-truong",
-  "phap-ly",
   "khung-phap-ly",
-  "tap-chi-kinh-te-viet-nam",
-  "san-pham-thi-truong",
+  "phap-ly",
+  "kinh-te-xanh",
+  "tieu-dung",
+  "podcast",
+  "infographics",
+  "emagazine",
+  "e-magazine",
 ];
 
 const BAD_VNECONOMY_TITLE_PATTERNS = [
+  /^tạp chí kinh tế việt nam$/i,
+  /^sản phẩm\s*-\s*thị trường$/i,
   /^thị trường vốn/i,
   /^diễn đàn/i,
   /^bảo hiểm/i,
   /^ngân hàng/i,
-  /^tài chính$/i,
+  /^tài chính/i,
   /^khung pháp lý/i,
-  /^pháp lý$/i,
-  /^tiêu dùng$/i,
-  /^kinh tế xanh$/i,
-  /^doanh nghiệp niêm yết/i,
+  /^pháp lý/i,
+  /^tiêu dùng/i,
+  /^kinh tế xanh/i,
   /^podcast/i,
   /^infographics/i,
   /^thị trường$/i,
-  /^tạp chí kinh tế việt nam$/i,
-  /^sản phẩm\s*-\s*thị trường$/i,
-  /^đón đọc tạp chí kinh tế việt nam/i,
 ];
 
 const BAD_TEXT_SNIPPETS = [
   "Với phương châm Đoàn kết - Dân chủ",
   "Tạp chí Kinh tế Việt Nam",
-  "Editorial illustration for the dashboard mockup",
+  "Mời quý độc giả đón đọc ấn phẩm",
   "Đăng nhập để bình luận",
   "Bạn đọc có thể gửi",
   "Bản quyền thuộc về Tạp chí Kinh tế Việt Nam",
-  "Mời quý độc giả đón đọc",
-  "ấn phẩm Tạp chí Kinh tế Việt Nam",
-  "Askonomy AI",
 ];
 
-const BAD_NCQT_TITLE_PATTERNS = [
-  /^\d{1,2}\/\d{1,2}\/\d{4}\s*:/i,
-  /tự sát/i,
-  /sinh ra/i,
-  /qua đời/i,
-  /sinh nhật/i,
-  /chân dung/i,
-  /là ai\??$/i,
-];
+function fetchWithTimeout(url: string) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+  return fetch(url, {
+    headers: { "user-agent": USER_AGENT },
+    next: { revalidate: 1800 },
+    signal: controller.signal,
+  }).finally(() => clearTimeout(timer));
+}
 
 function slugFromUrl(url: string) {
   const pathname = new URL(url).pathname;
@@ -78,57 +68,34 @@ function slugFromUrl(url: string) {
   return last.replace(/\.htm$/i, "").replace(/[^a-zA-Z0-9\-À-ỹ]+/g, "-").toLowerCase();
 }
 
-function normalizeSpaces(value: string) {
-  return value.replace(/\s+/g, " ").trim();
-}
-
 function cleanTitle(title: string, source: SourceKey) {
-  const trimmed = normalizeSpaces(title);
-  if (source === "vneconomy") {
-    return trimmed.replace(/\s*-\s*VnEconomy$/i, "").trim();
-  }
-  return trimmed;
-}
-
-function isBadParagraph(text: string) {
-  if (!text) return true;
-  if (BAD_TEXT_SNIPPETS.some((snippet) => text.includes(snippet))) return true;
-  if (/^(nguồn|biên dịch|theo)\s*:/i.test(text)) return true;
-  if (/^mời quý độc giả/i.test(text)) return true;
-  if (/^đón đọc tạp chí kinh tế việt nam/i.test(text)) return true;
-  if (/^\s*(ảnh|video)\s*:/i.test(text)) return true;
-  return false;
+  const trimmed = title.replace(/\s+/g, " ").trim();
+  return source === "vneconomy" ? trimmed.replace(/\s*-\s*VnEconomy$/i, "").trim() : trimmed;
 }
 
 function extractParagraphs($: cheerio.CheerioAPI, source: SourceKey) {
   const selectors =
     source === "vneconomy"
-      ? [
-          "article p",
-          ".detail__content p",
-          ".detail-content p",
-          ".article__body p",
-          ".article-content p",
-          "main article p",
-        ]
+      ? ["article p", ".detail__content p", ".detail-content p", ".article__body p", ".article-content p", "main article p"]
       : ["article p", ".entry-content p", ".post-content p", ".td-post-content p", "main article p", "main p"];
 
   for (const selector of selectors) {
     const texts = $(selector)
-      .map((_, el) => normalizeSpaces($(el).text()))
+      .map((_, el) => $(el).text().replace(/\s+/g, " ").trim())
       .get()
-      .filter((text) => text.length > 55)
-      .filter((text) => !isBadParagraph(text));
+      .filter(Boolean)
+      .filter((text) => text.length > 60)
+      .filter((text) => !BAD_TEXT_SNIPPETS.some((snippet) => text.includes(snippet)));
 
     if (texts.length >= 4) return texts;
   }
 
   return $("p")
-    .map((_, el) => normalizeSpaces($(el).text()))
+    .map((_, el) => $(el).text().replace(/\s+/g, " ").trim())
     .get()
-    .filter((text) => text.length > 70)
-    .filter((text) => !isBadParagraph(text))
-    .slice(0, 14);
+    .filter((text) => text.length > 80)
+    .filter((text) => !BAD_TEXT_SNIPPETS.some((snippet) => text.includes(snippet)))
+    .slice(0, 10);
 }
 
 function extractText($: cheerio.CheerioAPI, source: SourceKey) {
@@ -136,20 +103,11 @@ function extractText($: cheerio.CheerioAPI, source: SourceKey) {
 }
 
 function extractTitle($: cheerio.CheerioAPI) {
-  return (
-    $("meta[property='og:title']").attr("content") ||
-    $("meta[name='twitter:title']").attr("content") ||
-    $("h1").first().text().trim() ||
-    $("title").text().trim()
-  );
+  return $("meta[property='og:title']").attr("content") || $("h1").first().text().trim() || $("title").text().trim();
 }
 
 function extractExcerpt($: cheerio.CheerioAPI) {
-  return normalizeSpaces(
-    $("meta[property='og:description']").attr("content") ||
-      $("meta[name='description']").attr("content") ||
-      ""
-  );
+  return $("meta[property='og:description']").attr("content") || $("meta[name='description']").attr("content") || "";
 }
 
 function extractImage($: cheerio.CheerioAPI, url: string) {
@@ -160,6 +118,7 @@ function extractImage($: cheerio.CheerioAPI, url: string) {
     undefined;
 
   if (!raw) return undefined;
+
   try {
     return new URL(raw, url).toString();
   } catch {
@@ -202,35 +161,27 @@ function isRecentEnough(source: SourceKey, publishedAt: string) {
   return diffDays >= 0 && diffDays <= 4;
 }
 
-function shouldRejectPage(params: {
-  url: string;
-  title: string;
-  excerpt: string;
-  content: string;
-  source: SourceKey;
-}) {
-  const { url, title, excerpt, content, source } = params;
+function shouldRejectPage(params: { url: string; title: string; content: string; source: SourceKey }) {
+  const { url, title, content, source } = params;
   const slug = slugFromUrl(url);
   const paragraphCount = content.split(/\n\n+/).filter(Boolean).length;
-  const merged = `${title} ${excerpt} ${content}`.toLowerCase();
 
-  if (!title || title.length < 16) return true;
-  if (!content || content.length < 650) return true;
+  if (!title || title.length < 18) return true;
+  if (!content || content.length < 500) return true;
   if (paragraphCount < 4) return true;
+  if (BAD_TEXT_SNIPPETS.some((snippet) => content.includes(snippet))) return true;
 
   if (source === "vneconomy") {
     if (BAD_VNECONOMY_PREFIXES.some((prefix) => slug === prefix || slug.startsWith(prefix + "-"))) return true;
     if (BAD_VNECONOMY_TITLE_PATTERNS.some((pattern) => pattern.test(title))) return true;
-    if (/mời quý độc giả đón đọc/i.test(merged)) return true;
-    if (/ấn phẩm tạp chí kinh tế việt nam/i.test(merged)) return true;
-    if (/^tạp chí kinh tế việt nam$/i.test(title)) return true;
-    if (/^sản phẩm\s*-\s*thị trường$/i.test(title)) return true;
   }
 
   if (source === "nghiencuuquocte") {
     if (!/\/\d{4}\/\d{2}\/\d{2}\//.test(url)) return true;
     if (/thế giới hôm nay/i.test(title)) return true;
-    if (BAD_NCQT_TITLE_PATTERNS.some((pattern) => pattern.test(title))) return true;
+    if (/^\d{1,2}\/\d{1,2}\/\d{4}/.test(title)) return true;
+    if (/vào ngày này năm/i.test(content)) return true;
+    if (/tự sát/i.test(title)) return true;
   }
 
   return false;
@@ -239,29 +190,20 @@ function shouldRejectPage(params: {
 export async function parseArticle(url: string, source: SourceKey): Promise<ArticleRecord | null> {
   const sourceLabel = source === "vneconomy" ? "VnEconomy" : "Nghiên cứu Quốc tế";
 
-  const response = await fetch(url, {
-    headers: { "user-agent": "newsroom-desk-final/1.0" },
-    next: { revalidate: 1800 },
-  });
-
+  const response = await fetchWithTimeout(url);
   if (!response.ok) return null;
-
   const html = await response.text();
+
   const $ = cheerio.load(html);
 
   const title = cleanTitle(extractTitle($), source);
-  const excerpt = extractExcerpt($);
+  const excerpt = extractExcerpt($).replace(/\s+/g, " ").trim();
   const content = extractText($, source);
   const imageUrl = extractImage($, url);
   const publishedAt = extractPublishedAt($, url, source);
 
-  if (shouldRejectPage({ url, title, excerpt, content, source })) {
-    return null;
-  }
-
-  if (!isRecentEnough(source, publishedAt)) {
-    return null;
-  }
+  if (shouldRejectPage({ url, title, content, source })) return null;
+  if (!isRecentEnough(source, publishedAt)) return null;
 
   const articleType = detectArticleType(source, title, content);
   const promotional = isPromotionalArticle(title, excerpt, content);
