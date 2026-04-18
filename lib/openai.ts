@@ -141,6 +141,26 @@ function tryParseJson(text: string): SummaryBlock | null {
   }
 }
 
+function extractTextFromUnknownContent(content: unknown): string {
+  if (typeof content === "string") return content;
+
+  if (!Array.isArray(content)) return "";
+
+  return content
+    .map((part) => {
+      if (typeof part === "string") return part;
+      if (!part || typeof part !== "object") return "";
+
+      const record = part as Record<string, unknown>;
+      if (typeof record.text === "string") return record.text;
+      if (typeof record.value === "string") return record.value;
+      if (typeof record.content === "string") return record.content;
+      return "";
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
 const summaryFallback = (title: string, excerpt: string, content: string, sourceLabel: string): SummaryBlock => {
   const short = firstSentences(excerpt || content, 3) || content.slice(0, 320);
   const isOpinion = /nghiên cứu|nghien cuu/i.test(sourceLabel);
@@ -236,17 +256,15 @@ async function callChatJson(client: OpenAI, model: string, prompt: string) {
     })
   );
 
-  const content = response.choices?.[0]?.message?.content;
-  const text = typeof content === "string" ? content : Array.isArray(content) ? content.map((p) => (typeof p === "string" ? p : "")).join("\n") : "";
+  const rawContent: unknown = response.choices?.[0]?.message?.content as unknown;
+  const text = extractTextFromUnknownContent(rawContent);
   return tryParseJson(text);
 }
 
 function candidateModels(primary?: string) {
-  const values = [
-    primary,
-    "gpt-4.1-mini",
-    "gpt-4o-mini",
-  ].filter((value, index, arr): value is string => !!value && arr.indexOf(value) === index);
+  const values = [primary, "gpt-4.1-mini", "gpt-4o-mini"].filter(
+    (value, index, arr): value is string => !!value && arr.indexOf(value) === index
+  );
 
   return values;
 }
