@@ -21,6 +21,7 @@ export async function POST(request: Request) {
       question,
       title: article.title,
       content: article.content,
+      summary: article.summary,
     });
 
     return NextResponse.json({ answer });
