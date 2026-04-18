@@ -5,30 +5,14 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function normalizeError(error: unknown) {
-  if (error instanceof Error) {
-    return {
-      name: error.name,
-      message: error.message,
-      stack: error.stack,
-    };
-  }
-
-  try {
-    return JSON.parse(JSON.stringify(error));
-  } catch {
-    return { message: String(error) };
-  }
-}
-
 function isRateLimitError(error: unknown) {
   if (!error || typeof error !== "object") return false;
 
-  const e = error as { status?: number; code?: string };
-  return e.status === 429 || e.code === "rate_limit_exceeded";
+  const e = error as { status?: number; code?: string; message?: string };
+  return e.status === 429 || e.code === "rate_limit_exceeded" || /rate limit/i.test(e.message || "");
 }
 
-async function withRetry<T>(fn: () => Promise<T>, maxRetries = 1): Promise<T> {
+async function withRetry<T>(fn: () => Promise<T>, maxRetries = 2): Promise<T> {
   let attempt = 0;
 
   while (true) {
@@ -46,123 +30,141 @@ async function withRetry<T>(fn: () => Promise<T>, maxRetries = 1): Promise<T> {
   }
 }
 
-async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
-  let timer: NodeJS.Timeout | undefined;
+function normalizeError(error: unknown) {
+  if (error instanceof Error) {
+    return {
+      name: error.name,
+      message: error.message,
+      stack: error.stack,
+    };
+  }
 
   try {
-    return await Promise.race([
-      promise,
-      new Promise<T>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`OpenAI timeout after ${timeoutMs}ms`)), timeoutMs);
-      }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
+    return JSON.parse(JSON.stringify(error));
+  } catch {
+    return { message: String(error) };
   }
 }
 
-const SUMMARY_SCHEMA = {
-  type: "object",
-  additionalProperties: false,
-  properties: {
-    summaryShort: { type: "string" },
-    whatItReallySays: { type: "string" },
-    whyItMatters: { type: "string" },
-    easyExplanation: { type: "string" },
-    keyTakeaway: { type: "string" },
-    cautionNote: { type: "string" },
-    conclusionText: { type: "string" },
-    tableData: {
-      type: "array",
-      items: {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          label: { type: "string" },
-          value: { type: "string" },
-        },
-        required: ["label", "value"],
-      },
-    },
-    diagramHint: {
-      type: "string",
-      enum: ["timeline", "cause-effect", "compare", "none"],
-    },
-  },
-  required: [
-    "summaryShort",
-    "whatItReallySays",
-    "whyItMatters",
-    "easyExplanation",
-    "keyTakeaway",
-    "cautionNote",
-    "conclusionText",
-    "tableData",
-    "diagramHint",
-  ],
-} as const;
+function firstSentences(text: string, limit = 3) {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (!normalized) return "";
+
+  const parts = normalized
+    .split(/(?<=[.!?…])\s+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  return parts.slice(0, limit).join(" ").slice(0, 420);
+}
+
+function trimField(value: unknown, fallback = "") {
+  return typeof value === "string" ? value.replace(/\s+/g, " ").trim() : fallback;
+}
+
+function coerceTableData(value: unknown): Array<Record<string, string | number>> {
+  if (!Array.isArray(value)) return [];
+
+  return value
+    .map((row) => {
+      if (!row || typeof row !== "object") return null;
+      const entries = Object.entries(row as Record<string, unknown>)
+        .filter(([, v]) => ["string", "number"].includes(typeof v))
+        .slice(0, 4);
+      if (entries.length === 0) return null;
+      return Object.fromEntries(entries) as Record<string, string | number>;
+    })
+    .filter((row): row is Record<string, string | number> => !!row)
+    .slice(0, 5);
+}
+
+function normalizeDiagramHint(value: unknown) {
+  const v = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (v === "timeline" || v === "compare") return v;
+  if (v === "cause-effect" || v === "cause_effect") return "cause-effect";
+  return "none";
+}
+
+function normalizeSummary(parsed: unknown): SummaryBlock | null {
+  if (!parsed || typeof parsed !== "object") return null;
+
+  const source = parsed as Record<string, unknown>;
+  const summaryShort = trimField(source.summaryShort);
+  const whatItReallySays = trimField(source.whatItReallySays);
+  const whyItMatters = trimField(source.whyItMatters);
+  const easyExplanation = trimField(source.easyExplanation);
+  const keyTakeaway = trimField(source.keyTakeaway);
+  const cautionNote = trimField(source.cautionNote);
+  const conclusionText = trimField(source.conclusionText);
+
+  if (
+    !summaryShort ||
+    !whatItReallySays ||
+    !whyItMatters ||
+    !easyExplanation ||
+    !keyTakeaway ||
+    !cautionNote ||
+    !conclusionText
+  ) {
+    return null;
+  }
+
+  return {
+    summaryShort,
+    whatItReallySays,
+    whyItMatters,
+    easyExplanation,
+    keyTakeaway,
+    cautionNote,
+    conclusionText,
+    tableData: coerceTableData(source.tableData),
+    diagramHint: normalizeDiagramHint(source.diagramHint),
+  };
+}
+
+function tryParseJson(text: string): SummaryBlock | null {
+  const raw = (text || "").trim();
+  if (!raw) return null;
+
+  try {
+    return normalizeSummary(JSON.parse(raw));
+  } catch {
+    const start = raw.indexOf("{");
+    const end = raw.lastIndexOf("}");
+    if (start === -1 || end === -1 || end <= start) return null;
+
+    try {
+      return normalizeSummary(JSON.parse(raw.slice(start, end + 1)));
+    } catch {
+      return null;
+    }
+  }
+}
 
 const summaryFallback = (title: string, excerpt: string, content: string, sourceLabel: string): SummaryBlock => {
-  const sourceText = sourceLabel.toLowerCase();
-  const isOpinion = sourceText.includes("nghiên cứu") || sourceText.includes("nghien");
-  const usableText = (excerpt || content || "").replace(/\s+/g, " ").trim();
-  const short = usableText.slice(0, 280) || title;
+  const short = firstSentences(excerpt || content, 3) || content.slice(0, 320);
+  const isOpinion = /nghiên cứu|nghien cuu/i.test(sourceLabel);
 
   return {
     summaryShort: short,
     whatItReallySays: isOpinion
-      ? "Đây là bài bình luận hoặc biên dịch. Trọng tâm không nằm ở việc kể lại sự kiện, mà ở cách tác giả diễn giải ý nghĩa chiến lược của sự kiện đó."
-      : "Đây là bài tin hoặc phân tích theo hướng thực tế. Trọng tâm nên được đọc ở tác động lên thị trường, doanh nghiệp hoặc chính sách, không chỉ ở phần headline.",
+      ? "Bài này nên được đọc như một lập luận hoặc góc nhìn của tác giả về cục diện, chứ không phải bản tin trung lập theo nghĩa hẹp."
+      : "Bài này đang nhấn vào hệ quả thực tế của sự kiện, chứ không chỉ kể lại diễn biến bề mặt.",
     whyItMatters: isOpinion
-      ? "Bài đáng đọc khi bạn muốn hiểu cách một luận điểm chiến lược đang được dựng lên và nó có thể ảnh hưởng tới cách nhìn về khu vực, quan hệ quốc tế hoặc rủi ro chính sách."
-      : "Bài đáng đọc khi nó giúp bạn nối sự kiện với hệ quả thực: dòng tiền, tâm lý thị trường, chi phí, rủi ro hoặc quyết định kinh doanh.",
+      ? "Giá trị của bài nằm ở cách nó khung lại vấn đề chiến lược và gợi cho người đọc một cách nhìn để theo dõi diễn biến tiếp theo."
+      : "Giá trị của bài nằm ở chỗ nó gợi ra tác động thực lên thị trường, doanh nghiệp, chính sách hoặc dòng tiền.",
     easyExplanation: isOpinion
-      ? "Nói ngắn gọn, tác giả đang cố nói rằng đằng sau sự kiện này có một thông điệp chiến lược lớn hơn điều được kể ở bề mặt."
-      : "Nói ngắn gọn, bài này quan trọng vì nó không chỉ đưa tin mà còn gợi ra chuyện gì có thể thay đổi trong thực tế sau đó.",
-    keyTakeaway: `Điểm nên giữ lại từ bài "${title}" là phải đọc lớp tác động thật phía sau nội dung bề mặt.`,
+      ? "Nói ngắn gọn, tác giả đang cố chứng minh vì sao nên nhìn sự kiện này theo một hướng nhất định."
+      : "Nói ngắn gọn, bài đang chỉ ra chuyện này có thể tác động thế nào ngoài đời thật, không chỉ trên mặt báo.",
+    keyTakeaway: `Điểm nên giữ lại từ bài "${title}" là phải nhìn lớp tác động hoặc lập luận phía sau headline.`,
     cautionNote: isOpinion
-      ? "Với bài bình luận hoặc biên dịch, cần tách dữ kiện được nêu ra khỏi phần suy luận của tác giả."
-      : "Bản fallback này chỉ là lớp tóm tắt an toàn. Nó chưa thay thế được bản phân tích đầy đủ khi nhánh AI chính chạy thành công.",
-    conclusionText: "Hệ thống đã giữ được nội dung cốt lõi của bài, nhưng đây vẫn là bản tóm tắt an toàn để tránh làm nghẽn cả pipeline.",
+      ? "Với bài bình luận hoặc biên dịch, cần tách phần dữ kiện được nêu ra khỏi phần suy luận của tác giả."
+      : "Bản dự phòng này chỉ nêu trục chính của bài, chưa thay thế được một bản tóm tắt AI đầy đủ.",
+    conclusionText: "Đây là bản tóm tắt dự phòng để hệ thống không bỏ trống nội dung khi lớp phân tích chính gặp lỗi.",
     tableData: [],
     diagramHint: "none",
   };
 };
-
-function normalizeSummary(parsed: any): SummaryBlock | null {
-  if (!parsed || typeof parsed !== "object") return null;
-
-  const requiredStrings = [
-    "summaryShort",
-    "whatItReallySays",
-    "whyItMatters",
-    "easyExplanation",
-    "keyTakeaway",
-    "cautionNote",
-    "conclusionText",
-  ];
-
-  for (const key of requiredStrings) {
-    if (typeof parsed[key] !== "string" || !parsed[key].trim()) return null;
-  }
-
-  return {
-    summaryShort: parsed.summaryShort.trim(),
-    whatItReallySays: parsed.whatItReallySays.trim(),
-    whyItMatters: parsed.whyItMatters.trim(),
-    easyExplanation: parsed.easyExplanation.trim(),
-    keyTakeaway: parsed.keyTakeaway.trim(),
-    cautionNote: parsed.cautionNote.trim(),
-    conclusionText: parsed.conclusionText.trim(),
-    tableData: Array.isArray(parsed.tableData) ? parsed.tableData : [],
-    diagramHint:
-      parsed.diagramHint === "timeline" ||
-      parsed.diagramHint === "cause-effect" ||
-      parsed.diagramHint === "compare"
-        ? parsed.diagramHint
-        : "none",
-  };
-}
 
 function buildSummaryPrompt(params: {
   title: string;
@@ -174,31 +176,79 @@ function buildSummaryPrompt(params: {
   const { title, excerpt, content, sourceLabel, articleType } = params;
   const isOpinion = articleType === "opinion_translation";
 
-  return `
-Bạn là biên tập viên phân tích tin tức bằng tiếng Việt.
-Mục tiêu là viết gọn, rõ, có nội dung thật, không sáo rỗng.
+  return [
+    "Bạn là biên tập viên phân tích tin tức bằng tiếng Việt.",
+    "Trả về duy nhất 1 object JSON hợp lệ, không markdown, không giải thích thêm.",
+    "Các key bắt buộc: summaryShort, whatItReallySays, whyItMatters, easyExplanation, keyTakeaway, cautionNote, conclusionText, tableData, diagramHint.",
+    "summaryShort phải dài 2-4 câu, đi thẳng vào ý chính.",
+    isOpinion
+      ? "Vì đây là bài bình luận/biên dịch, whatItReallySays và cautionNote phải chỉ ra rõ lập luận trung tâm và giới hạn lập luận của tác giả."
+      : "Vì đây là bài tin/phân tích, whatItReallySays và whyItMatters phải bám vào tác động thực tế, tránh nói chung chung.",
+    "diagramHint chỉ được là: none, timeline, compare, cause-effect.",
+    "tableData là mảng; nếu bài không có số liệu rõ thì trả về [].",
+    `Nguồn: ${sourceLabel}`,
+    `Loại bài: ${articleType}`,
+    `Tiêu đề: ${title}`,
+    `Excerpt: ${excerpt}`,
+    `Nội dung: ${content.slice(0, 10000)}`,
+  ].join("\n\n");
+}
 
-Quy tắc:
-- Chỉ dùng thông tin trong bài.
-- Không viết kiểu khen chê chung chung.
-- summaryShort: 2-4 câu.
-- whatItReallySays: nêu ý chính thật của bài.
-- whyItMatters: nêu tác động thực.
-- easyExplanation: giải thích dễ hiểu, ngắn.
-- keyTakeaway: chốt 1 ý chính.
-- cautionNote: nêu giới hạn khi đọc.
-- conclusionText: kết luận ngắn, chắc.
-- tableData chỉ dùng khi bài có số liệu thật rõ.
+async function callResponsesJson(client: OpenAI, model: string, prompt: string) {
+  const response = await withRetry(() =>
+    client.responses.create({
+      model,
+      input: [
+        {
+          role: "system",
+          content: "Bạn là biên tập viên phân tích tin tức bằng tiếng Việt. Luôn trả về một object JSON hợp lệ.",
+        },
+        {
+          role: "user",
+          content: prompt,
+        },
+      ],
+      max_output_tokens: 900,
+      store: false,
+    })
+  );
 
-Nguồn: ${sourceLabel}
-Loại bài: ${articleType}
-${isOpinion ? "Đây là bài bình luận/biên dịch. Hãy tách lập luận khỏi fact." : "Đây là bài tin/phân tích. Hãy bám tác động thực tế."}
+  return tryParseJson(response.output_text || "");
+}
 
-Tiêu đề: ${title}
-Excerpt: ${excerpt}
-Nội dung bài:
-${content.slice(0, 9000)}
-`;
+async function callChatJson(client: OpenAI, model: string, prompt: string) {
+  const response = await withRetry(() =>
+    client.chat.completions.create({
+      model,
+      temperature: 0.2,
+      response_format: { type: "json_object" },
+      messages: [
+        {
+          role: "system",
+          content: "Bạn là biên tập viên phân tích tin tức bằng tiếng Việt. Luôn trả về đúng một object JSON hợp lệ.",
+        },
+        {
+          role: "user",
+          content: prompt,
+        },
+      ],
+      max_tokens: 900,
+    })
+  );
+
+  const content = response.choices?.[0]?.message?.content;
+  const text = typeof content === "string" ? content : Array.isArray(content) ? content.map((p) => (typeof p === "string" ? p : "")).join("\n") : "";
+  return tryParseJson(text);
+}
+
+function candidateModels(primary?: string) {
+  const values = [
+    primary,
+    "gpt-4.1-mini",
+    "gpt-4o-mini",
+  ].filter((value, index, arr): value is string => !!value && arr.indexOf(value) === index);
+
+  return values;
 }
 
 export async function generateSummary(params: {
@@ -217,85 +267,106 @@ export async function generateSummary(params: {
 
   const client = new OpenAI({ apiKey });
   const prompt = buildSummaryPrompt(params);
+  const models = candidateModels(process.env.OPENAI_SUMMARY_MODEL);
 
-  try {
-    const response = await withTimeout(
-      withRetry(() =>
-        client.responses.create({
-          model: process.env.OPENAI_SUMMARY_MODEL || "gpt-4o-mini",
-          input: [
-            {
-              role: "system",
-              content: "Bạn là biên tập viên phân tích tin tức bằng tiếng Việt. Trả về dữ liệu đúng schema.",
-            },
-            {
-              role: "user",
-              content: prompt,
-            },
-          ],
-          store: false,
-          text: {
-            format: {
-              type: "json_schema",
-              name: "news_summary",
-              schema: SUMMARY_SCHEMA,
-              strict: true,
-            },
-            verbosity: "low",
-          },
-        })
-      ),
-      18000
-    );
+  for (const model of models) {
+    try {
+      const viaResponses = await callResponsesJson(client, model, prompt);
+      if (viaResponses) return viaResponses;
+    } catch (error) {
+      console.error("generateSummary responses failed", {
+        title,
+        sourceLabel,
+        model,
+        error: normalizeError(error),
+      });
+    }
 
-    const raw = response.output_text || "{}";
-    const parsed = normalizeSummary(JSON.parse(raw));
-    if (!parsed) throw new Error("Summary schema normalized to null");
-    return parsed;
-  } catch (error) {
-    console.error("generateSummary primary failed", {
-      title,
-      sourceLabel,
-      error: normalizeError(error),
-    });
-
-    return summaryFallback(title, excerpt, content, sourceLabel);
+    try {
+      const viaChat = await callChatJson(client, model, prompt);
+      if (viaChat) return viaChat;
+    } catch (error) {
+      console.error("generateSummary chat failed", {
+        title,
+        sourceLabel,
+        model,
+        error: normalizeError(error),
+      });
+    }
   }
+
+  console.error("generateSummary primary failed", {
+    title,
+    sourceLabel,
+    models,
+    reason: "all model attempts failed or returned invalid JSON",
+  });
+
+  return summaryFallback(title, excerpt, content, sourceLabel);
 }
 
 export async function answerAboutArticle(params: {
+  question: string;
   title: string;
   content: string;
-  question: string;
+  summary: SummaryBlock;
 }): Promise<string> {
-  const { title, content, question } = params;
   const apiKey = process.env.OPENAI_API_KEY;
+  const { question, title, content, summary } = params;
 
   if (!apiKey) {
-    return "Hiện chưa có OpenAI API key nên phần trả lời theo bài viết đang chạy ở chế độ giới hạn.";
+    return `Chưa cấu hình OpenAI API key. Dựa trên dữ liệu hiện có, bài "${title}" chủ yếu nhấn vào: ${summary.keyTakeaway}`;
   }
 
   const client = new OpenAI({ apiKey });
 
-  const response = await withTimeout(
-    client.responses.create({
-      model: process.env.OPENAI_CHAT_MODEL || "gpt-4o-mini",
-      input: [
-        {
-          role: "system",
-          content:
-            "Bạn là trợ lý đọc báo. Chỉ trả lời dựa trên nội dung bài đã cung cấp. Nếu bài không đủ thông tin, nói rõ là bài không cho biết.",
-        },
-        {
-          role: "user",
-          content: `Tiêu đề: ${title}\n\nNội dung:\n${content.slice(0, 12000)}\n\nCâu hỏi: ${question}`,
-        },
-      ],
-      store: false,
-      text: { verbosity: "medium" },
-    }),
-    20000
-  );
+  const prompt = `
+Bạn là trợ lý giải thích tin tức bằng tiếng Việt.
+Chỉ trả lời dựa trên bài đang mở và phần tóm tắt đã có sẵn. Không bịa thêm nguồn ngoài.
 
-  return response.output_text || "Tôi chưa rút ra được câu trả lời chắc chắn từ nội dung bài.";
+Tiêu đề: ${title}
+
+Tóm tắt có sẵn:
+- Tóm tắt ngắn: ${summary.summaryShort}
+- Bài thực chất muốn nói gì: ${summary.whatItReallySays}
+- Vì sao quan trọng: ${summary.whyItMatters}
+- Giải thích dễ hiểu: ${summary.easyExplanation}
+- Điểm cần nhớ: ${summary.keyTakeaway}
+- Điểm cần dè chừng: ${summary.cautionNote}
+
+Nội dung nền:
+${content.slice(0, 10000)}
+
+Câu hỏi của người dùng:
+${question}
+  `.trim();
+
+  const models = candidateModels(process.env.OPENAI_CHAT_MODEL || process.env.OPENAI_SUMMARY_MODEL);
+
+  for (const model of models) {
+    try {
+      const response = await withRetry(() =>
+        client.responses.create({
+          model,
+          input: [
+            { role: "system", content: "Trả lời ngắn gọn, rõ ràng, bám đúng nội dung bài." },
+            { role: "user", content: prompt },
+          ],
+          max_output_tokens: 600,
+          store: false,
+        })
+      );
+
+      const answer = (response.output_text || "").trim();
+      if (answer) return answer;
+    } catch (error) {
+      console.error("answerAboutArticle failed", {
+        title,
+        model,
+        error: normalizeError(error),
+      });
+    }
+  }
+
+  return `Dựa trên nội dung hiện có, điều quan trọng nhất của bài "${title}" là: ${summary.keyTakeaway}`;
 }
