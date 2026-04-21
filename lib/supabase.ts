@@ -44,7 +44,7 @@ function mapArticleRow(row: any): ArticleRecord {
   const sourceName = Array.isArray(row.sources) ? row.sources[0]?.name : row.sources?.name;
   return {
     id: row.id,
-    slug: row.url?.split("/").pop()?.replace(".htm", "") ?? row.id,
+    slug: row.url?.split("/").filter(Boolean).pop()?.replace(".htm", "") ?? row.id,
     source: mapSource(sourceName),
     sourceLabel: sourceName ?? "Nguồn tin",
     url: row.url,
