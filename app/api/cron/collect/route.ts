@@ -4,7 +4,18 @@ import { parseArticle } from "@/lib/collectors/parse-article";
 import { storeArticle } from "@/lib/supabase";
 import { SourceKey } from "@/lib/types";
 
-export const maxDuration = 300;
+// Vercel hobby plan: max 60s serverless function. Pro: 300s.
+// Ta giới hạn runtime bằng tay thấp hơn để luôn trả về được trước khi Vercel kill.
+export const maxDuration = 60;
+
+// Ngân sách thời gian mềm cho cả run: dừng xử lý bài mới khi vượt.
+const RUN_BUDGET_MS = 50_000;
+
+// Tối đa số bài xử lý mỗi source mỗi run (tránh timeout + tiết kiệm quota Gemini).
+const MAX_LINKS_PER_SOURCE = 2;
+
+// Timeout cứng cho parse+summarize 1 bài (bao cả gọi Gemini ~45s bên trong).
+const PER_ARTICLE_TIMEOUT_MS = 55_000;
 
 function authorized(request: Request) {
   const header = request.headers.get("x-cron-secret");
@@ -12,27 +23,91 @@ function authorized(request: Request) {
   return !!secret && header === secret;
 }
 
-const MAX_LINKS_PER_SOURCE = 1;
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`Timeout ${ms}ms: ${label}`)),
+      ms
+    );
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      }
+    );
+  });
+}
 
-async function collectSource(source: SourceKey) {
-  const links = await discoverArticleLinks(source);
-  const results: Array<{ url: string; stored: string; error?: string }> = [];
+type ItemResult = {
+  url: string;
+  stored: "stored" | "updated" | "skipped" | "error" | "timeout" | "budget-exceeded";
+  error?: string;
+};
 
-  for (const url of links.slice(0, MAX_LINKS_PER_SOURCE)) {
+async function collectSource(
+  source: SourceKey,
+  deadlineAt: number
+): Promise<ItemResult[]> {
+  const results: ItemResult[] = [];
+
+  let links: string[] = [];
+  try {
+    links = await withTimeout(
+      discoverArticleLinks(source),
+      15_000,
+      `discover ${source}`
+    );
+  } catch (error) {
+    results.push({
+      url: `discover:${source}`,
+      stored: "error",
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return results;
+  }
+
+  const picked = links.slice(0, MAX_LINKS_PER_SOURCE);
+
+  for (const url of picked) {
+    // Budget check: nếu còn ít hơn 5s cho bài tiếp → dừng sớm, để lần sau làm
+    if (Date.now() > deadlineAt - 5_000) {
+      results.push({ url, stored: "budget-exceeded" });
+      continue;
+    }
+
     try {
-      const article = await parseArticle(url, source);
-      if (!article || !article.keepArticle) {
+      const article = await withTimeout(
+        parseArticle(url, source),
+        PER_ARTICLE_TIMEOUT_MS,
+        `parseArticle ${url}`
+      );
+
+      if (!article) {
+        results.push({ url, stored: "skipped" });
+        continue;
+      }
+
+      if (!article.keepArticle) {
         results.push({ url, stored: "skipped" });
         continue;
       }
 
       const saved = await storeArticle(article);
-      results.push({ url, stored: saved.mode });
-    } catch (error) {
       results.push({
         url,
-        stored: "error",
-        error: error instanceof Error ? error.message : "Unknown error",
+        stored: saved.mode === "updated" ? "updated" : "stored",
+      });
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      const isTimeout = /timeout/i.test(msg);
+      results.push({
+        url,
+        stored: isTimeout ? "timeout" : "error",
+        error: msg,
       });
     }
   }
@@ -45,30 +120,43 @@ async function handle(request: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  try {
-    const vneconomy = await collectSource("vneconomy");
-    const nghiencuuquocte = await collectSource("nghiencuuquocte");
+  const startedAt = Date.now();
+  const deadlineAt = startedAt + RUN_BUDGET_MS;
 
-    return NextResponse.json({
-      ok: true,
-      summary: {
-        vneconomy: vneconomy.length,
-        nghiencuuquocte: nghiencuuquocte.length,
-      },
-      items: {
-        vneconomy,
-        nghiencuuquocte,
-      },
-    });
-  } catch (error) {
-    return NextResponse.json(
-      {
-        ok: false,
-        error: error instanceof Error ? error.message : "Unknown error",
-      },
-      { status: 500 }
-    );
-  }
+  const vneconomy = await collectSource("vneconomy", deadlineAt).catch((error) => [
+    {
+      url: "vneconomy:root",
+      stored: "error" as const,
+      error: error instanceof Error ? error.message : String(error),
+    },
+  ]);
+
+  const nghiencuuquocte = await collectSource(
+    "nghiencuuquocte",
+    deadlineAt
+  ).catch((error) => [
+    {
+      url: "nghiencuuquocte:root",
+      stored: "error" as const,
+      error: error instanceof Error ? error.message : String(error),
+    },
+  ]);
+
+  const elapsedMs = Date.now() - startedAt;
+
+  return NextResponse.json({
+    ok: true,
+    elapsedMs,
+    budgetMs: RUN_BUDGET_MS,
+    summary: {
+      vneconomy: vneconomy.length,
+      nghiencuuquocte: nghiencuuquocte.length,
+    },
+    items: {
+      vneconomy,
+      nghiencuuquocte,
+    },
+  });
 }
 
 export async function GET(request: Request) {

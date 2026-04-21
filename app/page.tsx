@@ -5,6 +5,9 @@ import { SectionHeading } from "@/components/section-heading";
 import { TopNav } from "@/components/top-nav";
 import { getHomepageData } from "@/lib/supabase";
 
+// Trang chủ revalidate mỗi 5 phút để cron collect (chạy 30 phút/lần) kịp đẩy bài mới lên.
+export const revalidate = 300;
+
 export default async function HomePage() {
   const data = await getHomepageData();
 
@@ -20,7 +23,7 @@ export default async function HomePage() {
             <SectionHeading
               eyebrow="Top stories"
               title="Những bài đáng đọc trước"
-              description="Trang chủ vẫn lưu đủ bài, nhưng dàn trang ưu tiên những bài có tác động rộng, cần giải thích nhiều, hoặc có ý nghĩa với dòng tiền, chính sách và địa chính trị."
+              description="Ưu tiên những bài có tác động rộng, cần giải thích nhiều, hoặc có ý nghĩa với dòng tiền, chính sách và địa chính trị."
             />
             <div className="grid gap-6 md:grid-cols-2">
               {data.topStories.map((article) => (
@@ -31,19 +34,23 @@ export default async function HomePage() {
 
           <aside className="space-y-5">
             <SectionHeading
-              eyebrow="Editorial note"
-              title="Bản đọc tin kiểu newsroom"
-              description="Giao diện này đã chạy thật; bước tiếp theo là thay nội dung demo bằng pipeline đọc bài thật, tóm tắt sâu hơn theo từng nguồn, và cron cập nhật tự động mỗi ngày."
+              eyebrow="Reading desk"
+              title="Cách dùng dashboard"
             />
             <div className="paper-card rounded-[2rem] p-6">
-              <div className="grid-ink rounded-[1.4rem] border border-black/10 p-5">
-                <p className="text-xs uppercase tracking-[0.18em] text-[var(--accent-red)]">What comes next</p>
-                <ul className="mt-4 space-y-3 text-sm leading-7 text-[var(--ink-soft)]">
-                  <li>• VnEconomy ưu tiên lấy link từ RSS chính thức rồi mới fallback sang HTML.</li>
-                  <li>• Nghiên cứu Quốc tế được đọc như bài bình luận/biên dịch, không như tin thuần.</li>
-                  <li>• Prompt tóm tắt đã đổi sang kiểu dài hơn, bám sát 2 mẫu output bạn yêu cầu.</li>
-                  <li>• Cron sẽ bơm bài thật vào dashboard thay vì dùng dữ liệu seed/demo.</li>
-                </ul>
+              <div className="space-y-5 text-sm leading-7 text-[var(--ink-soft)]">
+                <div>
+                  <p className="headline-serif text-lg font-bold text-[var(--ink)]">1. Đọc theo nhịp</p>
+                  <p>Đầu tiên đọc hero story, sau đó qua digest sáng, rồi mới kéo xuống dòng bài mới.</p>
+                </div>
+                <div>
+                  <p className="headline-serif text-lg font-bold text-[var(--ink)]">2. Mở bài cần đào sâu</p>
+                  <p>Trang chi tiết mới là nơi có đủ “tóm tắt + giải thích + kết luận + chat box”.</p>
+                </div>
+                <div>
+                  <p className="headline-serif text-lg font-bold text-[var(--ink)]">3. Không bị quá tải</p>
+                  <p>Hệ thống vẫn thu tất cả, nhưng giao diện chỉ ưu tiên phần cần xem trước.</p>
+                </div>
               </div>
             </div>
           </aside>
@@ -67,23 +74,22 @@ export default async function HomePage() {
 
           <aside className="space-y-5">
             <SectionHeading
-              eyebrow="Reading desk"
-              title="Cách dùng dashboard"
+              eyebrow="About"
+              title="Về Newsroom Desk"
             />
             <div className="paper-card rounded-[2rem] p-6">
-              <div className="space-y-5 text-sm leading-7 text-[var(--ink-soft)]">
-                <div>
-                  <p className="headline-serif text-lg font-bold text-[var(--ink)]">1. Đọc theo nhịp</p>
-                  <p>Đầu tiên đọc hero story, sau đó qua digest sáng, rồi mới kéo xuống dòng bài mới.</p>
-                </div>
-                <div>
-                  <p className="headline-serif text-lg font-bold text-[var(--ink)]">2. Mở bài cần đào sâu</p>
-                  <p>Trang chi tiết mới là nơi có đủ “tóm tắt + giải thích + kết luận + chat box”.</p>
-                </div>
-                <div>
-                  <p className="headline-serif text-lg font-bold text-[var(--ink)]">3. Không bị quá tải</p>
-                  <p>Hệ thống vẫn thu tất cả, nhưng giao diện chỉ ưu tiên phần cần xem trước. Đây là cách chống “nhiễu thông tin”.</p>
-                </div>
+              <div className="space-y-4 text-sm leading-7 text-[var(--ink-soft)]">
+                <p>
+                  Bản tin cá nhân tự động tổng hợp và phân tích tin từ{" "}
+                  <strong className="text-[var(--ink)]">VnEconomy</strong> và{" "}
+                  <strong className="text-[var(--ink)]">Nghiên cứu Quốc tế</strong>.
+                </p>
+                <p>
+                  Collector chạy 30 phút/lần trong ngày. Morning Edition 06:00 sáng mỗi ngày.
+                </p>
+                <p>
+                  Mỗi bài đều có block tóm tắt sâu + chat hỏi lại, thay vì chỉ lướt headline.
+                </p>
               </div>
             </div>
           </aside>

@@ -1,5 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
-import { mockArticles, mockDigest } from "@/lib/mock-data";
+import { mockArticles } from "@/lib/mock-data";
 import { ArticleRecord, DailyDigest, HomepageData, SourceKey } from "@/lib/types";
 
 function getSupabaseClient() {
@@ -121,16 +121,22 @@ export async function getArticleBySlug(slug: string): Promise<ArticleRecord | nu
 
 export async function getDigest(): Promise<DailyDigest | null> {
   const supabase = getSupabaseClient();
-  if (!supabase) return mockDigest;
+  if (!supabase) return null;
 
-  const today = new Date().toISOString().slice(0, 10);
+  // Lấy digest mới nhất trong 2 ngày gần đây (để không trống nếu cron 06:00 chưa chạy)
+  const twoDaysAgo = new Date(Date.now() - 48 * 60 * 60 * 1000)
+    .toISOString()
+    .slice(0, 10);
+
   const { data } = await supabase
     .from("daily_digests")
     .select("digest_date, title, intro_text, digest_json")
-    .eq("digest_date", today)
+    .gte("digest_date", twoDaysAgo)
+    .order("digest_date", { ascending: false })
+    .limit(1)
     .maybeSingle();
 
-  if (!data) return mockDigest;
+  if (!data) return null;
 
   return {
     date: data.digest_date,
@@ -145,12 +151,30 @@ export async function getHomepageData(): Promise<HomepageData> {
   const articles = await getArticles();
   const digest = await getDigest();
 
-  return {
-    featured: articles[0] ?? null,
-    topStories: articles.slice(1, 5),
-    latest: articles.slice(0, 12),
-    digest,
-  };
+  // Tính điểm "nổi bật" = importanceScore + bonus độ mới (bài mới 24h được ưu tiên)
+  const now = Date.now();
+  const scored = articles.map((article) => {
+    const ageHours = Math.max(
+      0,
+      (now - new Date(article.publishedAt).getTime()) / (1000 * 60 * 60)
+    );
+    // Bài trong 24h: bonus tối đa +15; sau 48h: 0
+    const freshnessBonus = Math.max(0, 15 - ageHours * 0.6);
+    return { article, rank: (article.importanceScore || 0) + freshnessBonus };
+  });
+
+  const byRank = [...scored].sort((a, b) => b.rank - a.rank).map((x) => x.article);
+
+  // Hero: bài có rank cao nhất
+  const featured = byRank[0] ?? null;
+
+  // Top stories: 4 bài tiếp theo theo rank, loại trùng featured
+  const topStories = byRank.filter((a) => a.slug !== featured?.slug).slice(0, 4);
+
+  // Latest: vẫn theo publishedAt mới nhất (đã sort từ getArticles)
+  const latest = articles.slice(0, 12);
+
+  return { featured, topStories, latest, digest };
 }
 
 async function findExistingArticleId(
@@ -290,6 +314,9 @@ export async function storeDigest(digest: DailyDigest) {
   const supabase = getSupabaseClient();
   if (!supabase) return { mode: "preview" as const };
 
+  // LƯU Ý: schema daily_digests KHÔNG có cột updated_at, chỉ có created_at.
+  // Trước đây code ghi updated_at làm upsert 500 và toàn bộ morning-digest
+  // chưa bao giờ tạo được bản ghi nào.
   const { error } = await supabase.from("daily_digests").upsert(
     {
       digest_date: digest.date,
@@ -299,7 +326,6 @@ export async function storeDigest(digest: DailyDigest) {
         articleSlugs: digest.articleSlugs,
         items: digest.items ?? [],
       },
-      updated_at: new Date().toISOString(),
     },
     { onConflict: "digest_date" }
   );

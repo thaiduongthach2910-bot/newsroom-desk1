@@ -1,4 +1,7 @@
+"use client";
+
 import Link from "next/link";
+import { useEffect, useState } from "react";
 import { CalendarDays, Newspaper, Search, Sparkles } from "lucide-react";
 
 const navItems = [
@@ -8,13 +11,24 @@ const navItems = [
   { href: "/archive", label: "Lưu trữ" },
 ];
 
-export function TopNav() {
-  const today = new Intl.DateTimeFormat("vi-VN", {
+function formatDateVi(date: Date) {
+  return new Intl.DateTimeFormat("vi-VN", {
     weekday: "long",
     day: "2-digit",
     month: "2-digit",
     year: "numeric",
-  }).format(new Date());
+  }).format(date);
+}
+
+export function TopNav() {
+  // Render server-side với 1 ngày placeholder để tránh hydration mismatch,
+  // sau đó update sang ngày thật ở client — cách này đảm bảo ngày luôn đúng
+  // dù page bị cache ở Vercel.
+  const [today, setToday] = useState<string>("");
+
+  useEffect(() => {
+    setToday(formatDateVi(new Date()));
+  }, []);
 
   return (
     <header className="border-b border-black/10 bg-white/65 backdrop-blur">
@@ -23,7 +37,7 @@ export function TopNav() {
           <div className="space-y-3">
             <div className="flex items-center gap-3 text-sm text-[var(--ink-soft)]">
               <CalendarDays className="h-4 w-4" />
-              <span className="capitalize">{today}</span>
+              <span className="capitalize">{today || "\u00A0"}</span>
             </div>
             <Link href="/" className="inline-flex items-end gap-3">
               <div className="rounded-full border border-[var(--accent-navy)] bg-[var(--accent-navy)] p-2 text-white">
