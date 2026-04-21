@@ -1,0 +1,30 @@
+{
+  "name": "news-dashboard-v1",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "@google/genai": "^1.48.0",
+    "@supabase/supabase-js": "^2.103.0",
+    "cheerio": "^1.2.0",
+    "fast-xml-parser": "^5.5.12",
+    "lucide-react": "^1.8.0",
+    "next": "^16.2.3",
+    "react": "^19.2.5",
+    "react-dom": "^19.2.5"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.2.2",
+    "@types/node": "^25.6.0",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^4.2.2",
+    "typescript": "^6.0.2"
+  }
+}
