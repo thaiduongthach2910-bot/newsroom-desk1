@@ -2,6 +2,12 @@ export type SourceKey = "vneconomy" | "nghiencuuquocte";
 export type ImportanceLevel = "high" | "medium" | "low";
 export type ArticleType = "news_analysis" | "opinion_translation";
 
+export interface KeyNumber {
+  label: string; // ví dụ: "ICOR dự kiến"
+  value: string; // ví dụ: "4,5 - 4,8"
+  meaning: string; // ví dụ: "Mỗi đồng vốn bỏ ra tạo ~0,21 đồng tăng trưởng..."
+}
+
 export interface SummaryBlock {
   summaryShort: string;
   whatItReallySays: string;
@@ -10,6 +16,11 @@ export interface SummaryBlock {
   keyTakeaway: string;
   cautionNote: string;
   conclusionText: string;
+  // 3 field mới — thêm chiều sâu cho summary (v3)
+  context?: string; // bối cảnh trước đó - cần biết gì để hiểu bài
+  keyNumbers?: KeyNumber[]; // các con số quan trọng + giải thích
+  whatToWatch?: string; // điều nên theo dõi tiếp sau bài
+  // legacy
   tableData?: Array<Record<string, string | number>>;
   diagramHint?: string;
 }

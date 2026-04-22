@@ -11,8 +11,12 @@ export const maxDuration = 60;
 // Ngân sách thời gian mềm cho cả run: dừng xử lý bài mới khi vượt.
 const RUN_BUDGET_MS = 50_000;
 
-// Tối đa số bài xử lý mỗi source mỗi run (tránh timeout + tiết kiệm quota Gemini).
-const MAX_LINKS_PER_SOURCE = 2;
+// Tối đa số bài xử lý mỗi source mỗi run.
+// Vì summary giờ dùng gemini-2.5-pro (100 RPD free tier), phải chặt tay hơn.
+// Tính toán: collect 15 phút/lần × 96 runs/ngày × 1 bài/nguồn × 2 nguồn = tối đa 192 calls/ngày
+// Thực tế (trừ dedupe skip): ~30-50 calls/ngày — an toàn dưới 100 quota Pro.
+// Nếu Pro hết quota, code tự fallback sang Flash (250 RPD).
+const MAX_LINKS_PER_SOURCE = 1;
 
 // Timeout cứng cho parse+summarize 1 bài (bao cả gọi Gemini ~45s bên trong).
 const PER_ARTICLE_TIMEOUT_MS = 55_000;

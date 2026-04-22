@@ -2,18 +2,23 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ArrowLeft, ExternalLink } from "lucide-react";
 import { ArticleChatBox } from "@/components/article-chat-box";
+import { AiSelectionWrapper } from "@/components/ai-selection-wrapper";
 import { Footer } from "@/components/footer";
 import { StoryCard } from "@/components/article-card";
 import { TopNav } from "@/components/top-nav";
-import { getArticleBySlug, getArticles } from "@/lib/supabase";
+import { getArticleBySlug, getRelatedArticles } from "@/lib/supabase";
+
+export const revalidate = 300;
 
 function renderParagraphs(text: string) {
-  return text.split("\n").filter(Boolean).map((paragraph, index) => <p key={index}>{paragraph}</p>);
+  return text
+    .split("\n")
+    .filter(Boolean)
+    .map((paragraph, index) => <p key={index}>{paragraph}</p>);
 }
 
 function renderTable(tableData?: Array<Record<string, string | number>>) {
   if (!tableData || tableData.length === 0) return null;
-
   const keys = Object.keys(tableData[0]);
   if (keys.length < 2) return null;
 
@@ -33,7 +38,9 @@ function renderTable(tableData?: Array<Record<string, string | number>>) {
             {tableData.map((row, index) => (
               <tr key={index} className="border-b border-black/5">
                 {keys.map((key) => (
-                  <td key={key} className="px-2 py-2 align-top text-[var(--ink-soft)]">{String(row[key] ?? "")}</td>
+                  <td key={key} className="px-2 py-2 align-top text-[var(--ink-soft)]">
+                    {String(row[key] ?? "")}
+                  </td>
                 ))}
               </tr>
             ))}
@@ -54,9 +61,9 @@ export default async function ArticlePage({
 
   if (!article) notFound();
 
-  const related = (await getArticles())
-    .filter((item) => item.slug !== article.slug)
-    .slice(0, 3);
+  const related = await getRelatedArticles(article.id, 3);
+  const { summary } = article;
+  const hasKeyNumbers = summary.keyNumbers && summary.keyNumbers.length > 0;
 
   return (
     <main>
@@ -69,6 +76,7 @@ export default async function ArticlePage({
 
         <article className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_360px]">
           <div className="space-y-8">
+            {/* Hero */}
             <section className="paper-card overflow-hidden rounded-[2rem]">
               <div className="relative h-[320px] sm:h-[420px]">
                 <img
@@ -91,37 +99,71 @@ export default async function ArticlePage({
                 <div className="space-y-5 news-grid-line pr-0 lg:pr-8">
                   <div>
                     <p className="text-xs uppercase tracking-[0.18em] text-[var(--accent-red)]">Tóm tắt ngắn</p>
-                    <p className="mt-3 text-sm leading-7 text-[var(--ink-soft)]">{article.summary.summaryShort}</p>
+                    <p className="mt-3 text-sm leading-7 text-[var(--ink-soft)]">{summary.summaryShort}</p>
                   </div>
+                  {summary.context ? (
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.18em] text-[var(--accent-red)]">Bối cảnh cần biết</p>
+                      <p className="mt-3 text-sm leading-7 text-[var(--ink-soft)]">{summary.context}</p>
+                    </div>
+                  ) : null}
                   <div>
                     <p className="text-xs uppercase tracking-[0.18em] text-[var(--accent-red)]">Bài thực chất muốn nói gì</p>
-                    <p className="mt-3 text-sm leading-7 text-[var(--ink-soft)]">{article.summary.whatItReallySays}</p>
+                    <p className="mt-3 text-sm leading-7 text-[var(--ink-soft)]">{summary.whatItReallySays}</p>
                   </div>
                   <div>
                     <p className="text-xs uppercase tracking-[0.18em] text-[var(--accent-red)]">Vì sao quan trọng</p>
-                    <p className="mt-3 text-sm leading-7 text-[var(--ink-soft)]">{article.summary.whyItMatters}</p>
+                    <p className="mt-3 text-sm leading-7 text-[var(--ink-soft)]">{summary.whyItMatters}</p>
                   </div>
                 </div>
 
                 <div className="space-y-5">
                   <div>
                     <p className="text-xs uppercase tracking-[0.18em] text-[var(--accent-red)]">Giải thích dễ hiểu</p>
-                    <p className="mt-3 text-sm leading-7 text-[var(--ink-soft)]">{article.summary.easyExplanation}</p>
+                    <p className="mt-3 text-sm leading-7 text-[var(--ink-soft)]">{summary.easyExplanation}</p>
                   </div>
+
+                  {hasKeyNumbers ? (
+                    <div className="rounded-[1.35rem] border border-black/10 bg-[var(--paper)] p-4">
+                      <p className="text-xs uppercase tracking-[0.18em] text-[var(--accent-red)]">Các con số trọng yếu</p>
+                      <div className="mt-3 space-y-3">
+                        {summary.keyNumbers!.map((num, idx) => (
+                          <div key={idx} className="border-l-2 border-[var(--accent-red)]/40 pl-3">
+                            <p className="text-sm font-semibold text-[var(--ink)]">
+                              {num.label}: <span className="text-[var(--accent-red)]">{num.value}</span>
+                            </p>
+                            {num.meaning ? (
+                              <p className="mt-1 text-xs leading-6 text-[var(--ink-soft)]">{num.meaning}</p>
+                            ) : null}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+
                   <div className="grid gap-4 md:grid-cols-2">
                     <div className="rounded-[1.35rem] border border-black/10 bg-[var(--paper)] p-4">
                       <p className="text-xs uppercase tracking-[0.18em] text-[var(--accent-red)]">Điểm cần nhớ</p>
-                      <p className="mt-2 text-sm leading-7 text-[var(--ink-soft)]">{article.summary.keyTakeaway}</p>
+                      <p className="mt-2 text-sm leading-7 text-[var(--ink-soft)]">{summary.keyTakeaway}</p>
                     </div>
                     <div className="rounded-[1.35rem] border border-black/10 bg-[var(--paper)] p-4">
                       <p className="text-xs uppercase tracking-[0.18em] text-[var(--accent-red)]">Điểm cần dè chừng</p>
-                      <p className="mt-2 text-sm leading-7 text-[var(--ink-soft)]">{article.summary.cautionNote}</p>
+                      <p className="mt-2 text-sm leading-7 text-[var(--ink-soft)]">{summary.cautionNote}</p>
                     </div>
                   </div>
-                  {renderTable(article.summary.tableData)}
+
+                  {renderTable(summary.tableData)}
+
+                  {summary.whatToWatch ? (
+                    <div className="rounded-[1.35rem] border border-[var(--accent-navy)]/20 bg-[var(--accent-navy)]/5 p-4">
+                      <p className="text-xs uppercase tracking-[0.18em] text-[var(--accent-navy)]">Theo dõi tiếp theo</p>
+                      <p className="mt-2 text-sm leading-7 text-[var(--ink-soft)]">{summary.whatToWatch}</p>
+                    </div>
+                  ) : null}
+
                   <div className="rounded-[1.35rem] border border-black/10 bg-white/75 p-4">
                     <p className="text-xs uppercase tracking-[0.18em] text-[var(--accent-red)]">Kết luận</p>
-                    <p className="mt-2 text-sm leading-7 text-[var(--ink-soft)]">{article.summary.conclusionText}</p>
+                    <p className="mt-2 text-sm leading-7 text-[var(--ink-soft)]">{summary.conclusionText}</p>
                   </div>
                   <a
                     href={article.url}
@@ -136,12 +178,18 @@ export default async function ArticlePage({
               </div>
             </section>
 
+            {/* Full content — wrap trong AiSelectionWrapper để bôi đen → hỏi AI */}
             <section className="paper-card rounded-[2rem] p-6 sm:p-8">
               <span className="kicker">Full context</span>
-              <div className="article-prose mt-6 max-w-none">
-                <h3>Nội dung nền đã lấy về</h3>
-                {renderParagraphs(article.content)}
-              </div>
+              <p className="mt-2 text-xs text-[var(--ink-soft)]">
+                Mẹo: bôi đen một đoạn bất kỳ → xuất hiện nút "Hỏi AI" để giải thích hoặc phân tích sâu đoạn đó.
+              </p>
+              <AiSelectionWrapper slug={article.slug}>
+                <div className="article-prose mt-6 max-w-none">
+                  <h3>Nội dung nền đã lấy về</h3>
+                  {renderParagraphs(article.content)}
+                </div>
+              </AiSelectionWrapper>
             </section>
 
             <ArticleChatBox slug={article.slug} articleTitle={article.title} />
@@ -170,19 +218,17 @@ export default async function ArticlePage({
                   <strong className="text-[var(--ink)]">Giờ đăng:</strong>{" "}
                   {new Date(article.publishedAt).toLocaleString("vi-VN")}
                 </p>
-                <p>
-                  <strong className="text-[var(--ink)]">Kiểu sơ đồ gợi ý:</strong>{" "}
-                  {article.summary.diagramHint || "none"}
-                </p>
               </div>
             </div>
 
-            <div className="space-y-4">
-              <span className="kicker">Đọc tiếp</span>
-              {related.map((item) => (
-                <StoryCard key={item.id} article={item} compact />
-              ))}
-            </div>
+            {related.length > 0 ? (
+              <div className="space-y-4">
+                <span className="kicker">Bài liên quan trong archive</span>
+                {related.map((item) => (
+                  <StoryCard key={item.id} article={item} compact />
+                ))}
+              </div>
+            ) : null}
           </aside>
         </article>
       </div>

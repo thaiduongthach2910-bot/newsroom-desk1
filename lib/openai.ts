@@ -1,28 +1,21 @@
 /**
- * lib/openai.ts
+ * lib/openai.ts (v3)
  *
- * Lịch sử: Ban đầu dùng OpenAI. Đã chuyển sang Google Gemini (free tier, 0đ/tháng)
- * vì user không muốn chịu chi phí thêm. File giữ nguyên tên `openai.ts` để
- * toàn bộ import ở nơi khác (parse-article.ts, chat/route.ts) không cần sửa.
- *
- * Model dùng:
- *  - Mặc định: gemini-2.5-flash (250 req/ngày free, chất lượng cao, tiếng Việt tốt)
- *  - Có thể đổi sang gemini-2.5-pro qua env var GEMINI_SUMMARY_MODEL (100 req/ngày free)
- *
- * Đặc điểm:
- *  - Structured output bằng responseSchema => không bao giờ fail do parse JSON
- *  - Timeout cứng 45s mỗi call => không hang collect route
- *  - Retry exponential backoff cho lỗi 429 / 503
- *  - Fallback chất lượng cao (extract key sentences từ content, không phải placeholder generic)
+ * Cải tiến v3:
+ *  - Summary dùng gemini-2.5-pro (chất lượng cao hơn flash, quota 100/ngày đủ dùng)
+ *  - Chat + ask-on-selection dùng gemini-2.5-flash (quota 250/ngày)
+ *  - Thêm 3 field summary: context, keyNumbers, whatToWatch
+ *  - Prompt tiếng Việt tinh chỉnh sâu hơn nữa - có ví dụ "tốt/tệ" để model học
+ *  - Hàm askAboutSelection() cho feature Ask on Selection
  */
 
 import { GoogleGenAI, Type } from "@google/genai";
 import { SummaryBlock } from "@/lib/types";
 
 // ----- constants -----
-const DEFAULT_SUMMARY_MODEL = "gemini-2.5-flash";
+const DEFAULT_SUMMARY_MODEL = "gemini-2.5-pro";
 const DEFAULT_CHAT_MODEL = "gemini-2.5-flash";
-const CALL_TIMEOUT_MS = 45_000;
+const CALL_TIMEOUT_MS = 50_000;
 const MAX_RETRIES = 2;
 
 // ----- helpers -----
@@ -45,9 +38,7 @@ function isRateLimitError(error: unknown) {
 }
 
 function normalizeError(error: unknown) {
-  if (error instanceof Error) {
-    return { name: error.name, message: error.message };
-  }
+  if (error instanceof Error) return { name: error.name, message: error.message };
   try {
     return JSON.parse(JSON.stringify(error));
   } catch {
@@ -79,7 +70,7 @@ async function withRetry<T>(fn: () => Promise<T>, maxRetries = MAX_RETRIES): Pro
       return await fn();
     } catch (error) {
       if (!isRateLimitError(error) || attempt >= maxRetries) throw error;
-      const delay = 1500 * Math.pow(2, attempt);
+      const delay = 2000 * Math.pow(2, attempt);
       await sleep(delay);
       attempt += 1;
     }
@@ -96,8 +87,24 @@ function firstSentences(text: string, limit = 3) {
   return parts.slice(0, limit).join(" ").slice(0, 480);
 }
 
-function trimField(v: unknown, fallback = "") {
-  return typeof v === "string" ? v.replace(/\s+/g, " ").trim() : fallback;
+function trimField(v: unknown) {
+  return typeof v === "string" ? v.replace(/\s+/g, " ").trim() : "";
+}
+
+function coerceKeyNumbers(value: unknown): SummaryBlock["keyNumbers"] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((row) => {
+      if (!row || typeof row !== "object") return null;
+      const r = row as Record<string, unknown>;
+      const label = trimField(r.label);
+      const val = trimField(r.value);
+      const meaning = trimField(r.meaning);
+      if (!label || !val) return null;
+      return { label, value: val, meaning };
+    })
+    .filter((x): x is { label: string; value: string; meaning: string } => !!x)
+    .slice(0, 6);
 }
 
 function coerceTableData(value: unknown): Array<Record<string, string | number>> {
@@ -126,40 +133,29 @@ function normalizeSummary(parsed: unknown): SummaryBlock | null {
   if (!parsed || typeof parsed !== "object") return null;
   const s = parsed as Record<string, unknown>;
 
-  const summaryShort = trimField(s.summaryShort);
-  const whatItReallySays = trimField(s.whatItReallySays);
-  const whyItMatters = trimField(s.whyItMatters);
-  const easyExplanation = trimField(s.easyExplanation);
-  const keyTakeaway = trimField(s.keyTakeaway);
-  const cautionNote = trimField(s.cautionNote);
-  const conclusionText = trimField(s.conclusionText);
+  const required = {
+    summaryShort: trimField(s.summaryShort),
+    whatItReallySays: trimField(s.whatItReallySays),
+    whyItMatters: trimField(s.whyItMatters),
+    easyExplanation: trimField(s.easyExplanation),
+    keyTakeaway: trimField(s.keyTakeaway),
+    cautionNote: trimField(s.cautionNote),
+    conclusionText: trimField(s.conclusionText),
+  };
 
-  if (
-    !summaryShort ||
-    !whatItReallySays ||
-    !whyItMatters ||
-    !easyExplanation ||
-    !keyTakeaway ||
-    !cautionNote ||
-    !conclusionText
-  ) {
-    return null;
-  }
+  if (Object.values(required).some((v) => !v)) return null;
 
   return {
-    summaryShort,
-    whatItReallySays,
-    whyItMatters,
-    easyExplanation,
-    keyTakeaway,
-    cautionNote,
-    conclusionText,
+    ...required,
+    context: trimField(s.context) || undefined,
+    keyNumbers: coerceKeyNumbers(s.keyNumbers),
+    whatToWatch: trimField(s.whatToWatch) || undefined,
     tableData: coerceTableData(s.tableData),
     diagramHint: normalizeDiagramHint(s.diagramHint),
   };
 }
 
-// ----- fallback: tạo summary "đủ dùng" khi AI fail -----
+// ----- fallback -----
 function summaryFallback(
   title: string,
   excerpt: string,
@@ -171,7 +167,6 @@ function summaryFallback(
   const short = firstSentences(base, 3) || content.slice(0, 320);
   const isOpinion = articleType === "opinion_translation";
 
-  // Trích vài câu có nội dung thực cho các field, không dùng câu generic
   const sentences = content
     .replace(/\s+/g, " ")
     .split(/(?<=[.!?…])\s+/)
@@ -180,7 +175,9 @@ function summaryFallback(
 
   const whatItReally = sentences[1] || sentences[0] || short;
   const whyMatters =
-    sentences.find((s) => /tác động|ảnh hưởng|quan trọng|rủi ro|cơ hội|đẩy|kéo/i.test(s)) ||
+    sentences.find((s) =>
+      /tác động|ảnh hưởng|quan trọng|rủi ro|cơ hội|đẩy|kéo/i.test(s)
+    ) ||
     sentences[2] ||
     "";
 
@@ -188,27 +185,27 @@ function summaryFallback(
     summaryShort: short,
     whatItReallySays: isOpinion
       ? `Đây là bài ${/biên dịch/i.test(sourceLabel) ? "biên dịch" : "bình luận/phân tích"} — cần đọc như một lập luận của tác giả, không phải bản tin trung lập. ${whatItReally}`.slice(0, 600)
-      : (whatItReally ||
+      : (
+          whatItReally ||
           "Bài đang mô tả một sự kiện/chính sách có thể tác động tới thị trường hoặc dòng tiền."
         ).slice(0, 600),
     whyItMatters:
       whyMatters ||
       (isOpinion
-        ? "Giá trị nằm ở cách bài khung lại vấn đề chiến lược để người đọc có một cách nhìn theo dõi diễn biến."
+        ? "Giá trị nằm ở cách bài khung lại vấn đề chiến lược."
         : "Giá trị nằm ở chỗ bài chỉ ra tác động thực tế lên thị trường, chính sách, doanh nghiệp hoặc dòng tiền."),
     easyExplanation: (sentences[3] || sentences[2] || short).slice(0, 500),
-    keyTakeaway: `Điểm nên giữ lại từ "${title}": đọc kỹ phần tác động/lập luận chứ không chỉ headline.`,
+    keyTakeaway: `Điểm nên giữ lại từ "${title}": đọc kỹ phần tác động chứ không chỉ headline.`,
     cautionNote: isOpinion
-      ? "Với bài bình luận hoặc biên dịch, phải tách phần dữ kiện khỏi phần suy luận của tác giả."
-      : "Bản tóm tắt này là tóm tắt dự phòng (tự động) vì tầng AI chính chưa chạy được — cần đọc bài gốc để xác nhận chi tiết.",
-    conclusionText:
-      "Tóm tắt dự phòng. Khi AI chạy lại bình thường, bản tóm tắt sâu sẽ thay thế phần này.",
+      ? "Với bài bình luận hoặc biên dịch, tách rõ dữ kiện khỏi suy luận của tác giả."
+      : "Bản tóm tắt này là tóm tắt dự phòng (tự động) — cần đọc bài gốc để xác nhận chi tiết.",
+    conclusionText: "Tóm tắt dự phòng. Khi AI chạy lại bình thường, bản sâu sẽ thay thế phần này.",
     tableData: [],
     diagramHint: "none",
   };
 }
 
-// ----- prompt builder cho summary -----
+// ----- prompt builder -----
 function buildSummaryPrompt(params: {
   title: string;
   excerpt: string;
@@ -221,33 +218,44 @@ function buildSummaryPrompt(params: {
 
   const typeBlock = isOpinion
     ? `ĐÂY LÀ BÀI BÌNH LUẬN / BIÊN DỊCH (không phải tin thuần).
-- whatItReallySays phải tóm được lập luận trung tâm của tác giả, không phải "bài nói về X".
-- cautionNote PHẢI nêu rõ giới hạn/định kiến có thể có của lập luận.
-- whyItMatters nên nói về "cách khung vấn đề" chứ không phải "sự kiện đang diễn ra".`
+- whatItReallySays phải tóm được LẬP LUẬN TRUNG TÂM của tác giả, không phải "bài nói về X".
+- cautionNote PHẢI nêu rõ giới hạn / định kiến có thể có của lập luận.
+- whyItMatters nói về "cách khung vấn đề" và hàm ý chiến lược, không phải "sự kiện đang diễn ra".
+- context nên nêu tác giả/bối cảnh gốc bài (nếu là biên dịch — tên tác giả gốc, xuất xứ, xu hướng trường phái).`
     : `ĐÂY LÀ BÀI TIN / PHÂN TÍCH THỰC TẾ.
-- whatItReallySays phải nhắm vào tác động thực (thị trường, chính sách, doanh nghiệp, dòng tiền), không chỉ kể lại sự kiện.
-- whyItMatters phải nói ai/ngành nào bị ảnh hưởng và theo cơ chế gì, không nói chung chung.
-- cautionNote chỉ nêu khi có điểm dễ hiểu nhầm hoặc dữ liệu chưa đủ.`;
+- whatItReallySays nhắm vào tác động THỰC (thị trường, chính sách, doanh nghiệp, dòng tiền), không kể lại sự kiện.
+- whyItMatters nói RÕ ai/ngành nào bị ảnh hưởng và theo CƠ CHẾ gì.
+- context nên nêu tình trạng trước đó / chính sách / thống kê liên quan để người đọc hiểu tầm bài.`;
 
   return [
     `Bạn là biên tập viên cấp cao của một bản tin kinh tế / địa chính trị tiếng Việt.`,
-    `Người đọc là 1 cá nhân muốn NẮM NHANH giá trị cốt lõi của bài, không muốn đọc lại nguyên văn.`,
+    `Người đọc là 1 cá nhân muốn HIỂU SÂU bài chứ không chỉ đọc lại headline. Họ có thời gian đọc kỹ nếu bài xứng đáng.`,
     ``,
     typeBlock,
     ``,
-    `YÊU CẦU CHẤT LƯỢNG (quan trọng):`,
-    `- Viết bằng tiếng Việt chuẩn, văn phong báo chí cao cấp kiểu The Economist / Guardian — có độ sâu, không sáo rỗng, không sao chép nguyên văn.`,
-    `- TUYỆT ĐỐI KHÔNG dùng các cụm mờ nghĩa: "rất quan trọng", "đáng chú ý", "nhiều tác động", "cần theo dõi sát sao". Mỗi field phải có thông tin cụ thể.`,
-    `- Nếu bài có số liệu / mốc thời gian / con người cụ thể → đưa vào summaryShort hoặc whatItReallySays.`,
-    `- summaryShort: 2-4 câu, đi thẳng vào ý chính, độc giả đọc xong HIỂU bài nói gì mà không cần mở bài.`,
-    `- whatItReallySays: trả lời "thông điệp ngầm / lớp thật của bài là gì?" — khác với summaryShort ở chỗ phân tích sâu hơn.`,
-    `- whyItMatters: 2-3 câu, nói RÕ ai bị ảnh hưởng và qua cơ chế gì.`,
-    `- easyExplanation: giải thích cho người không chuyên, dùng ví dụ/so sánh đời thường nếu có thể.`,
-    `- keyTakeaway: 1 câu ngắn gọn, người đọc chỉ cần nhớ 1 thứ sau khi đọc bài thì là câu này.`,
-    `- cautionNote: 1-2 câu cảnh báo về điểm dễ hiểu sai, thiên lệch nguồn, hoặc số liệu chưa đủ.`,
-    `- conclusionText: 1-2 câu khép bài, không lặp lại summaryShort.`,
-    `- tableData: chỉ đưa nếu bài có số liệu so sánh rõ ràng (ví dụ: trước/sau, nước A/B, năm X/Y). Nếu không có → [].`,
-    `- diagramHint: chọn 1 trong: "none" | "timeline" (có mốc thời gian) | "compare" (so sánh 2 thứ) | "cause-effect" (nguyên nhân → hệ quả).`,
+    `YÊU CẦU CHẤT LƯỢNG (cực kỳ quan trọng):`,
+    `- Viết tiếng Việt chuẩn, văn phong báo chí cao cấp kiểu The Economist / FT / Financial Review — sâu, cô đọng, không sáo rỗng.`,
+    `- TUYỆT ĐỐI KHÔNG dùng cụm mờ nghĩa: "rất quan trọng", "đáng chú ý", "nhiều tác động", "cần theo dõi sát sao", "mang lại nhiều cơ hội". Thay bằng thông tin cụ thể.`,
+    `- Có số/tên/mốc cụ thể → ĐƯA VÀO summaryShort hoặc whatItReallySays.`,
+    `- Không sao chép nguyên câu từ bài gốc — diễn đạt lại bằng văn của bạn.`,
+    ``,
+    `TỪNG FIELD:`,
+    `- summaryShort: 3-5 câu, bản tóm tắt "đủ ý". Độc giả đọc xong PHẢI hiểu bài nói gì, ai liên quan, con số trọng tâm, và kết luận bài đi tới đâu. KHÔNG chỉ 1-2 câu hời hợt.`,
+    `- whatItReallySays: 3-5 câu, phân tích lớp sâu — thông điệp ngầm, ý đồ của bên viết, các giả định không nói ra. KHÁC BIỆT với summaryShort.`,
+    `- whyItMatters: 3-4 câu nói RÕ ai/ngành/dòng tiền bị ảnh hưởng, qua cơ chế nào, trong khung thời gian nào.`,
+    `- easyExplanation: 3-5 câu giải thích cho người không chuyên. Dùng ví dụ / so sánh đời thường. Giải nghĩa thuật ngữ chuyên ngành.`,
+    `- keyTakeaway: 1 câu sắc bén — nếu độc giả chỉ nhớ 1 câu thì là câu này.`,
+    `- cautionNote: 2-3 câu cảnh báo điểm dễ hiểu sai, thiên lệch nguồn, dữ liệu chưa đủ, hay hàm ý ngầm cần dè chừng.`,
+    `- conclusionText: 2-3 câu khép bài, KHÔNG lặp summaryShort — nên nói về "vậy còn gì chưa rõ" hoặc "cách bài này gợi mở ra câu chuyện lớn hơn".`,
+    `- context: 2-4 câu BỐI CẢNH trước bài — người đọc cần biết gì để hiểu. Ví dụ: "Trước khi có NQ 68, chính sách X đã..." hoặc "Tác giả Y là giáo sư trường Z chuyên nghiên cứu...". Bỏ qua nếu bài tự đã đủ bối cảnh.`,
+    `- keyNumbers: mảng các con số quan trọng. Mỗi phần tử có 3 trường: label (tên chỉ số), value (giá trị + đơn vị), meaning (2-3 câu giải thích con số này nghĩa là gì). TỐI ĐA 5 số. Nếu bài không có số đáng kể → mảng rỗng.`,
+    `- whatToWatch: 2-3 câu — sau bài này, nên theo dõi điều gì/dấu hiệu gì trong vài tuần tới? Giúp độc giả biến bài thành "theo dõi chủ động".`,
+    `- tableData: chỉ đưa nếu bài có số liệu so sánh cụ thể (trước/sau, A vs B, năm X/Y). Không có → [].`,
+    `- diagramHint: "none" | "timeline" | "compare" | "cause-effect".`,
+    ``,
+    `VÍ DỤ ĐỘ DÀI và CHẤT LƯỢNG MONG MUỐN cho summaryShort:`,
+    `TỆ (tránh): "Bài nói về chính sách thuế quan mới của Mỹ. Điều này ảnh hưởng tới xuất khẩu Việt Nam. Các doanh nghiệp cần theo dõi."`,
+    `TỐT: "Mỹ vừa áp thuế 46% với hàng Việt Nam từ 5/4, ba mặt hàng chủ lực (dệt may, da giày, gỗ) bị ảnh hưởng nặng nhất do chiếm 38% kim ngạch xuất Mỹ. Chính phủ đang đàm phán giảm xuống 20% nhưng Bộ Thương mại Mỹ chưa phản hồi. Các doanh nghiệp có hợp đồng FOB sẽ chịu toàn bộ mức thuế, trong khi hợp đồng CIF có thể share với đối tác Mỹ."`,
     ``,
     `THÔNG TIN BÀI:`,
     `- Nguồn: ${sourceLabel}`,
@@ -255,23 +263,37 @@ function buildSummaryPrompt(params: {
     `- Tiêu đề: ${title}`,
     excerpt ? `- Excerpt: ${excerpt}` : ``,
     `- Nội dung:`,
-    content.slice(0, 12000),
+    content.slice(0, 14000),
   ]
     .filter(Boolean)
     .join("\n");
 }
 
-// ----- schema cho structured output -----
+// ----- schema -----
 const summarySchema = {
   type: Type.OBJECT,
   properties: {
-    summaryShort: { type: Type.STRING, description: "Tóm tắt 2-4 câu, đi thẳng vào ý chính" },
-    whatItReallySays: { type: Type.STRING, description: "Thông điệp thật/lớp sâu hơn" },
-    whyItMatters: { type: Type.STRING, description: "Ai bị ảnh hưởng và qua cơ chế gì" },
-    easyExplanation: { type: Type.STRING, description: "Giải thích dễ hiểu cho người không chuyên" },
-    keyTakeaway: { type: Type.STRING, description: "1 câu duy nhất cần nhớ sau khi đọc" },
-    cautionNote: { type: Type.STRING, description: "Điểm dễ hiểu sai hoặc thiên lệch" },
-    conclusionText: { type: Type.STRING, description: "1-2 câu khép bài" },
+    summaryShort: { type: Type.STRING, description: "3-5 câu tóm tắt đủ ý" },
+    whatItReallySays: { type: Type.STRING, description: "3-5 câu phân tích lớp sâu" },
+    whyItMatters: { type: Type.STRING, description: "3-4 câu ai/cơ chế/khung thời gian" },
+    easyExplanation: { type: Type.STRING, description: "3-5 câu giải thích dễ hiểu" },
+    keyTakeaway: { type: Type.STRING, description: "1 câu sắc bén" },
+    cautionNote: { type: Type.STRING, description: "2-3 câu cảnh báo" },
+    conclusionText: { type: Type.STRING, description: "2-3 câu khép bài" },
+    context: { type: Type.STRING, description: "2-4 câu bối cảnh trước bài" },
+    keyNumbers: {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          label: { type: Type.STRING },
+          value: { type: Type.STRING },
+          meaning: { type: Type.STRING },
+        },
+        required: ["label", "value", "meaning"],
+      },
+    },
+    whatToWatch: { type: Type.STRING, description: "2-3 câu theo dõi tiếp" },
     tableData: {
       type: Type.ARRAY,
       items: {
@@ -299,11 +321,14 @@ const summarySchema = {
   ],
   propertyOrdering: [
     "summaryShort",
+    "context",
     "whatItReallySays",
     "whyItMatters",
     "easyExplanation",
+    "keyNumbers",
     "keyTakeaway",
     "cautionNote",
+    "whatToWatch",
     "conclusionText",
     "tableData",
     "diagramHint",
@@ -321,7 +346,7 @@ async function callGeminiForSummary(ai: GoogleGenAI, model: string, prompt: stri
           responseMimeType: "application/json",
           responseSchema: summarySchema,
           temperature: 0.3,
-          maxOutputTokens: 2000,
+          maxOutputTokens: 3500,
         },
       }),
       CALL_TIMEOUT_MS,
@@ -347,6 +372,7 @@ async function callGeminiForSummary(ai: GoogleGenAI, model: string, prompt: stri
 
 function summaryModelsToTry() {
   const primary = process.env.GEMINI_SUMMARY_MODEL || DEFAULT_SUMMARY_MODEL;
+  // Nếu primary fail (rate limit Pro), fallback sang Flash (quota cao hơn)
   const set: string[] = [primary];
   if (!set.includes("gemini-2.5-flash")) set.push("gemini-2.5-flash");
   if (!set.includes("gemini-2.5-flash-lite")) set.push("gemini-2.5-flash-lite");
@@ -376,7 +402,7 @@ export async function generateSummary(params: {
     try {
       const result = await callGeminiForSummary(ai, model, prompt);
       if (result) return result;
-      console.warn("generateSummary: returned invalid shape", { title, model });
+      console.warn("generateSummary: invalid shape", { title, model });
     } catch (error) {
       console.error("generateSummary failed", {
         title,
@@ -387,11 +413,7 @@ export async function generateSummary(params: {
     }
   }
 
-  console.error("generateSummary: all models failed — fallback", {
-    title,
-    sourceLabel,
-    models,
-  });
+  console.error("generateSummary: all models failed — fallback", { title });
   return summaryFallback(title, excerpt, content, sourceLabel, articleType);
 }
 
@@ -421,26 +443,30 @@ export async function answerAboutArticle(params: {
 
   const prompt = [
     `Bạn là trợ lý giải thích tin tức bằng tiếng Việt.`,
-    `Chỉ trả lời dựa trên bài đang mở và phần tóm tắt có sẵn. Không bịa thêm số liệu hoặc nguồn ngoài.`,
-    `Nếu câu hỏi nằm ngoài phạm vi bài, nói thẳng là "Bài này không đề cập trực tiếp" rồi mới đưa gợi ý.`,
+    `Chỉ trả lời dựa trên bài đang mở và phần tóm tắt có sẵn. Không bịa số liệu hoặc nguồn ngoài.`,
+    `Nếu câu hỏi nằm ngoài phạm vi bài, nói thẳng "Bài này không đề cập trực tiếp" rồi mới đưa gợi ý.`,
     ``,
     `Tiêu đề: ${title}`,
     ``,
     `Tóm tắt đã có:`,
     `- Tóm tắt ngắn: ${summary.summaryShort}`,
+    summary.context ? `- Bối cảnh: ${summary.context}` : "",
     `- Bài thực chất nói gì: ${summary.whatItReallySays}`,
     `- Vì sao quan trọng: ${summary.whyItMatters}`,
     `- Giải thích dễ hiểu: ${summary.easyExplanation}`,
     `- Điểm cần nhớ: ${summary.keyTakeaway}`,
     `- Điểm cần dè chừng: ${summary.cautionNote}`,
+    summary.whatToWatch ? `- Theo dõi tiếp: ${summary.whatToWatch}` : "",
     ``,
     `Nội dung bài:`,
     content.slice(0, 12000),
     ``,
     `Câu hỏi: ${question}`,
     ``,
-    `Trả lời ngắn gọn, rõ ràng, bám đúng nội dung bài. Tối đa 6-8 câu.`,
-  ].join("\n");
+    `Trả lời ngắn gọn, rõ ràng, bám nội dung bài. Tối đa 6-8 câu.`,
+  ]
+    .filter(Boolean)
+    .join("\n");
 
   const models = chatModelsToTry();
 
@@ -451,10 +477,7 @@ export async function answerAboutArticle(params: {
           ai.models.generateContent({
             model,
             contents: prompt,
-            config: {
-              temperature: 0.4,
-              maxOutputTokens: 1000,
-            },
+            config: { temperature: 0.4, maxOutputTokens: 1200 },
           }),
           CALL_TIMEOUT_MS,
           `gemini chat (${model})`
@@ -472,4 +495,82 @@ export async function answerAboutArticle(params: {
   }
 
   return `Tạm thời chưa trả lời được (AI đang gặp lỗi). Điều quan trọng nhất của bài "${title}": ${summary.keyTakeaway}`;
+}
+
+// ----- ask on selection (feature B) -----
+export type AskMode = "explain" | "context" | "related_thinking";
+
+export async function askAboutSelection(params: {
+  mode: AskMode;
+  selection: string;
+  articleTitle: string;
+  articleContent: string;
+}): Promise<string> {
+  const { mode, selection, articleTitle, articleContent } = params;
+  const apiKey = process.env.GEMINI_API_KEY;
+
+  if (!apiKey) return "Chưa cấu hình GEMINI_API_KEY.";
+
+  const ai = new GoogleGenAI({ apiKey });
+
+  const modePrompts: Record<AskMode, string> = {
+    explain: `Nhiệm vụ: GIẢI THÍCH đoạn được chọn dưới đây cho người không chuyên.
+- Giải nghĩa thuật ngữ có trong đoạn.
+- Chỉ ra con số / tên riêng / khái niệm khó và diễn giải.
+- Dùng ví dụ đời thường nếu giúp hiểu nhanh hơn.
+- Trả lời 4-6 câu, tiếng Việt chuẩn.`,
+    context: `Nhiệm vụ: CUNG CẤP BỐI CẢNH cho đoạn được chọn.
+- Để hiểu đoạn này, cần biết điều gì ĐÃ xảy ra trước đó?
+- Có sự kiện / chính sách / thống kê liên quan nào?
+- Bằng kiến thức tổng quát (không bịa), giải thích 4-6 câu.
+- Nếu không chắc, nói thẳng "Tôi không đủ thông tin để xác nhận, cần nguồn khác".`,
+    related_thinking: `Nhiệm vụ: PHÂN TÍCH SÂU đoạn được chọn.
+- Đoạn này hàm ý điều gì sâu hơn câu chữ?
+- Có giả định không nói ra nào? Có điểm yếu lập luận nào?
+- Bài đặt đoạn này vào ngữ cảnh nào? Có góc nhìn nào bị bỏ sót?
+- Trả lời 5-7 câu, sắc sảo, như một biên tập viên cấp cao.`,
+  };
+
+  const prompt = [
+    `Bạn là trợ lý đọc tin thông minh bằng tiếng Việt.`,
+    modePrompts[mode],
+    ``,
+    `BÀI ĐANG ĐỌC:`,
+    `Tiêu đề: ${articleTitle}`,
+    `Nội dung đầy đủ (cho bối cảnh):`,
+    articleContent.slice(0, 10000),
+    ``,
+    `ĐOẠN NGƯỜI DÙNG CHỌN:`,
+    `"${selection.slice(0, 1500)}"`,
+    ``,
+    `Chỉ dựa vào bài trên và kiến thức tổng quát — không bịa số liệu cụ thể.`,
+  ].join("\n");
+
+  const models = chatModelsToTry();
+
+  for (const model of models) {
+    try {
+      const response = await withRetry(() =>
+        withTimeout(
+          ai.models.generateContent({
+            model,
+            contents: prompt,
+            config: { temperature: 0.45, maxOutputTokens: 900 },
+          }),
+          CALL_TIMEOUT_MS,
+          `gemini ask-on-selection (${model})`
+        )
+      );
+      const answer = (response.text || "").trim();
+      if (answer) return answer;
+    } catch (error) {
+      console.error("askAboutSelection failed", {
+        mode,
+        model,
+        error: normalizeError(error),
+      });
+    }
+  }
+
+  return "Tạm thời chưa trả lời được (AI đang gặp lỗi). Bạn thử lại sau ít phút.";
 }

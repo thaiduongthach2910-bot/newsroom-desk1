@@ -35,6 +35,9 @@ function normalizeSummary(summaryRow: any) {
     keyTakeaway: row?.key_takeaway ?? "",
     cautionNote: row?.caution_note ?? "",
     conclusionText: row?.conclusion_text ?? "",
+    context: row?.context_text ?? undefined,
+    keyNumbers: Array.isArray(row?.key_numbers_json) ? row.key_numbers_json : [],
+    whatToWatch: row?.what_to_watch_text ?? undefined,
     tableData: row?.table_json ?? undefined,
     diagramHint: row?.diagram_json?.hint ?? row?.output_json?.diagramHint ?? "none",
   };
@@ -96,6 +99,9 @@ export async function getArticles(source?: SourceKey): Promise<ArticleRecord[]> 
         key_takeaway,
         caution_note,
         conclusion_text,
+        context_text,
+        key_numbers_json,
+        what_to_watch_text,
         table_json,
         diagram_json,
         output_json
@@ -297,6 +303,9 @@ export async function storeArticle(article: ArticleRecord) {
       key_takeaway: article.summary.keyTakeaway,
       caution_note: article.summary.cautionNote,
       conclusion_text: article.summary.conclusionText,
+      context_text: article.summary.context ?? null,
+      key_numbers_json: article.summary.keyNumbers ?? null,
+      what_to_watch_text: article.summary.whatToWatch ?? null,
       table_json: article.summary.tableData ?? null,
       diagram_json: article.summary.diagramHint ? { hint: article.summary.diagramHint } : null,
       output_json: article.summary,
@@ -332,4 +341,167 @@ export async function storeDigest(digest: DailyDigest) {
 
   if (error) throw error;
   return { mode: "stored" as const };
+}
+
+// ----- SEARCH (feature A) -----
+export interface SearchHit {
+  article: ArticleRecord;
+  matchSource: "title" | "summary" | "content";
+  snippet: string;
+}
+
+function buildSnippet(text: string, query: string, length = 180): string {
+  if (!text) return "";
+  const lower = text.toLowerCase();
+  const qLower = query.toLowerCase();
+  const idx = lower.indexOf(qLower);
+  if (idx === -1) return text.slice(0, length) + (text.length > length ? "…" : "");
+  const start = Math.max(0, idx - 60);
+  const end = Math.min(text.length, idx + query.length + 120);
+  const prefix = start > 0 ? "…" : "";
+  const suffix = end < text.length ? "…" : "";
+  return prefix + text.slice(start, end) + suffix;
+}
+
+export async function searchArticles(
+  query: string,
+  limit = 20
+): Promise<SearchHit[]> {
+  const q = query.trim();
+  if (!q) return [];
+
+  const normalized = q.toLowerCase();
+  const terms = normalized
+    .split(/\s+/)
+    .filter((term) => term.length >= 2)
+    .slice(0, 6);
+
+  if (terms.length === 0) return [];
+
+  // Với archive <500 bài, load in-memory + filter nhanh hơn 3 query Postgres.
+  // (Postgres ILIKE trên clean_text có thể slow khi text dài và không có index tiếng Việt)
+  const all = await getArticles();
+
+  const scored: Array<{ article: ArticleRecord; score: number; where: SearchHit["matchSource"]; snippetSource: string }> = [];
+
+  for (const article of all) {
+    const titleLower = article.title.toLowerCase();
+    const summaryLower = [
+      article.summary?.summaryShort,
+      article.summary?.whatItReallySays,
+      article.summary?.whyItMatters,
+      article.summary?.easyExplanation,
+      article.summary?.keyTakeaway,
+      article.summary?.context,
+      article.summary?.whatToWatch,
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+    const contentLower = (article.content || "").toLowerCase();
+
+    // AND search: bài phải chứa TẤT CẢ terms ở ÍT NHẤT 1 trong 3 nơi
+    const allInTitle = terms.every((t) => titleLower.includes(t));
+    const allInSummary = terms.every((t) => summaryLower.includes(t));
+    const allInContent = terms.every((t) => contentLower.includes(t));
+
+    if (!allInTitle && !allInSummary && !allInContent) continue;
+
+    // Xác định match source ưu tiên
+    let where: SearchHit["matchSource"];
+    let snippetSource: string;
+    let score: number;
+    if (allInTitle) {
+      where = "title";
+      snippetSource = article.title;
+      score = 100;
+    } else if (allInSummary) {
+      where = "summary";
+      snippetSource = article.summary?.summaryShort || "";
+      score = 50;
+    } else {
+      where = "content";
+      snippetSource = article.content;
+      score = 20;
+    }
+
+    // Bonus: bài mới nhẹ hơn
+    const ageDays = Math.max(
+      0,
+      (Date.now() - new Date(article.publishedAt).getTime()) / (1000 * 60 * 60 * 24)
+    );
+    if (ageDays < 3) score += 5;
+
+    scored.push({ article, score, where, snippetSource });
+  }
+
+  scored.sort((a, b) => {
+    if (a.score !== b.score) return b.score - a.score;
+    return new Date(b.article.publishedAt).getTime() - new Date(a.article.publishedAt).getTime();
+  });
+
+  return scored.slice(0, limit).map((s) => ({
+    article: s.article,
+    matchSource: s.where,
+    snippet: buildSnippet(s.snippetSource, q),
+  }));
+}
+
+// ----- RELATED ARTICLES (feature D) -----
+// Chiến lược: so khớp từ khoá từ title + summary của bài gốc với các bài khác.
+// Đơn giản, không cần embedding — đủ tốt cho archive <1000 bài.
+const STOPWORDS = new Set([
+  "và","của","với","trong","cho","là","các","có","được","sẽ","bị","đã","này","đó","đến",
+  "từ","về","vì","bởi","nên","hoặc","hay","nhưng","tuy","mà","thì","nếu","khi","do","qua",
+  "the","a","an","of","and","or","but","for","in","on","at","to","by","is","are","was","were",
+  "be","been","being","do","does","did","has","have","had","not","no","yes","it","its","this",
+  "that","these","those","as","so","because","while","than","then","too","very","more","most",
+]);
+
+function extractKeywords(text: string, max = 10): string[] {
+  const normalized = (text || "")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .split(/\s+/)
+    .filter((w) => w.length >= 3 && !STOPWORDS.has(w));
+
+  const freq = new Map<string, number>();
+  for (const w of normalized) freq.set(w, (freq.get(w) || 0) + 1);
+  return [...freq.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, max)
+    .map(([w]) => w);
+}
+
+export async function getRelatedArticles(
+  articleId: string,
+  limit = 3
+): Promise<ArticleRecord[]> {
+  const all = await getArticles();
+  const current = all.find((a) => a.id === articleId);
+  if (!current) return [];
+
+  const currentKeywords = extractKeywords(
+    `${current.title} ${current.summary.summaryShort} ${current.summary.whatItReallySays}`,
+    12
+  );
+  if (currentKeywords.length === 0) return [];
+
+  const scored = all
+    .filter((a) => a.id !== articleId)
+    .map((a) => {
+      const text = `${a.title} ${a.summary.summaryShort} ${a.summary.whatItReallySays}`.toLowerCase();
+      let score = 0;
+      for (const kw of currentKeywords) {
+        if (text.includes(kw)) score += 1;
+      }
+      // Bonus nhỏ cho bài cùng nguồn (thường liên quan chủ đề hơn)
+      if (a.source === current.source) score += 0.3;
+      return { article: a, score };
+    })
+    .filter((x) => x.score >= 2) // cần match ít nhất 2 keyword
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit);
+
+  return scored.map((x) => x.article);
 }

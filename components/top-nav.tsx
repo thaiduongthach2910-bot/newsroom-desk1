@@ -1,8 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
-import { CalendarDays, Newspaper, Search, Sparkles } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { useEffect, useState, useTransition } from "react";
+import { CalendarDays, Newspaper, Search } from "lucide-react";
 
 const navItems = [
   { href: "/", label: "Trang chủ" },
@@ -21,14 +22,23 @@ function formatDateVi(date: Date) {
 }
 
 export function TopNav() {
-  // Render server-side với 1 ngày placeholder để tránh hydration mismatch,
-  // sau đó update sang ngày thật ở client — cách này đảm bảo ngày luôn đúng
-  // dù page bị cache ở Vercel.
-  const [today, setToday] = useState<string>("");
+  const [today, setToday] = useState("");
+  const [query, setQuery] = useState("");
+  const [isPending, startTransition] = useTransition();
+  const router = useRouter();
 
   useEffect(() => {
     setToday(formatDateVi(new Date()));
   }, []);
+
+  const handleSearch = (e: React.FormEvent) => {
+    e.preventDefault();
+    const q = query.trim();
+    if (!q) return;
+    startTransition(() => {
+      router.push(`/search?q=${encodeURIComponent(q)}`);
+    });
+  };
 
   return (
     <header className="border-b border-black/10 bg-white/65 backdrop-blur">
@@ -64,11 +74,29 @@ export function TopNav() {
                 </Link>
               ))}
             </div>
-            <div className="flex items-center gap-3 rounded-full border border-black/10 bg-white/80 px-4 py-2 text-sm text-[var(--ink-soft)]">
-              <Sparkles className="h-4 w-4 text-[var(--accent-red)]" />
-              <span>Bản đọc tin cá nhân, có giải thích và chat hỏi lại từng bài</span>
-              <Search className="hidden h-4 w-4 lg:block" />
-            </div>
+            <form
+              onSubmit={handleSearch}
+              className="flex items-center gap-2 rounded-full border border-black/10 bg-white/80 px-4 py-2 text-sm text-[var(--ink-soft)] transition focus-within:border-[var(--accent-navy)] focus-within:bg-white"
+            >
+              <Search className="h-4 w-4 shrink-0 text-[var(--accent-red)]" />
+              <input
+                type="search"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Tìm trong archive… (ví dụ: FTA, thuế, tỷ giá)"
+                className="min-w-0 flex-1 bg-transparent text-[var(--ink)] outline-none placeholder:text-[var(--ink-soft)]"
+                aria-label="Search articles"
+              />
+              {query ? (
+                <button
+                  type="submit"
+                  disabled={isPending}
+                  className="rounded-full bg-[var(--accent-navy)] px-3 py-1 text-xs font-semibold text-white transition hover:opacity-90 disabled:opacity-50"
+                >
+                  {isPending ? "..." : "Tìm"}
+                </button>
+              ) : null}
+            </form>
           </div>
         </div>
       </div>
